@@ -27,7 +27,7 @@ products = ac.get_products()
 runbooks = ac.get_runbooks()
 ```
 
-For a runnable end-to-end example: `python demo.py`
+For a runnable end-to-end example: `python examples/demo.py`
 
 ## Installation
 
