@@ -2,6 +2,9 @@
 """Quick demo of the ArmorCode SDK — run this to verify your setup."""
 
 import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from armorcode import ArmorCodeClient
 
 
