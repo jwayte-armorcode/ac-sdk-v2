@@ -4,30 +4,14 @@ Lightweight Python SDK for the ArmorCode REST API.
 
 ## Quick Start
 
-```python
-from armorcode import ArmorCodeClient
-
-# Connect with explicit credentials
-ac = ArmorCodeClient("app.armorcode.com", token="your-bearer-token")
-
-# Or load from an env file (reads TENANT_URL and *_TOKEN)
-ac = ArmorCodeClient.from_env("env")
-
-# Pull all Critical + High findings from the last 14 days
-findings = ac.get_findings(
-    severities=["Critical", "High"],
-    days_back=14,
-    dump_path="findings.json",   # optional: save raw JSON locally
-)
-
-# List repos with finding counts
-for repo, count in ac.list_repos():
-    print(f"{repo}: {count}")
-
-# Get findings for a specific repo
-for f in ac.get_findings_by_repo("my-repo"):
-    print(f"{f['severity']} - {f['title']}")
+```bash
+# Set up your env file, then:
+python demo.py
 ```
+
+The demo pulls Critical + High findings from the last 14 days, lists repos with
+finding counts, shows the top repo's findings, and lists teams, products, and
+runbooks. See `demo.py` for the full source.
 
 ## Installation
 
