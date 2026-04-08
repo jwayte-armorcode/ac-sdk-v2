@@ -48,6 +48,14 @@ def main():
     if total_products > 5:
         print(f"  ... and {total_products - 5} more")
 
+    # List sub-products
+    sub_products = ac.get_sub_products()
+    print(f"\nSub-Products: {len(sub_products)}")
+    for sp in sub_products[:5]:
+        print(f"  {sp['name']} (id: {sp['id']})")
+    if len(sub_products) > 5:
+        print(f"  ... and {len(sub_products) - 5} more")
+
     # List runbooks
     runbooks = ac.get_runbooks()
     print(f"\nRunbooks: {len(runbooks)}")
