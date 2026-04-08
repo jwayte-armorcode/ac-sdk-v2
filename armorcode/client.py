@@ -88,6 +88,9 @@ class ArmorCodeClient:
     # Core: get_findings — bulk pull with severity/status/date filters
     # ------------------------------------------------------------------
 
+    # ArmorCode API hard limit per query
+    _MAX_RESULTS = 10000
+
     def get_findings(
         self,
         severities=None,
@@ -102,6 +105,12 @@ class ArmorCodeClient:
         Pulls all matching findings in bulk (paginated internally) and caches
         them locally.  Subsequent calls to :meth:`list_repos` and
         :meth:`get_findings_by_repo` operate on this cached data.
+
+        If a query would return more than 10,000 results (the API hard limit),
+        the request is automatically split into smaller date-range chunks and
+        the results are merged.  This requires ``days_back`` to be set; if it
+        is ``None`` the method will first probe the total count and, when it
+        exceeds 10K, default to 365 days and chunk from there.
 
         Args:
             severities: List of severity levels, e.g. ``["Critical", "High"]``.
@@ -124,13 +133,56 @@ class ArmorCodeClient:
             filters["severity"] = list(severities)
         if statuses:
             filters["status"] = list(statuses)
+        if extra_filters:
+            filters.update(extra_filters)
+
         if days_back is not None:
             cutoff_ms = str(int((time.time() - days_back * 86400) * 1000))
             filters["foundOn"] = [cutoff_ms]
             filter_ops["foundOn"] = "GREATER_THAN"
-        if extra_filters:
-            filters.update(extra_filters)
 
+        # Probe total count first
+        total = self._probe_count(filters, filter_ops)
+
+        if total <= self._MAX_RESULTS:
+            all_findings = self._paginated_fetch(filters, filter_ops, page_size)
+        else:
+            # Auto-chunk by date range
+            effective_days = days_back if days_back is not None else 365
+            all_findings = self._chunked_fetch(
+                filters, filter_ops, effective_days, total, page_size,
+            )
+
+        self._findings = all_findings
+        self._cache_params = {
+            "severities": severities,
+            "statuses": statuses,
+            "days_back": days_back,
+        }
+
+        if dump_path:
+            self.dump_json(dump_path)
+
+        return all_findings
+
+    def _probe_count(self, filters, filter_ops):
+        """Fetch page 0 with size=1 to get totalElements."""
+        body = {
+            "filters": filters,
+            "filterOperations": filter_ops,
+            "page": 0,
+            "size": 1,
+        }
+        resp = self._session.post(
+            f"{self.base_url}/user/findings/",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json().get("totalElements", 0)
+
+    def _paginated_fetch(self, filters, filter_ops, page_size):
+        """Standard paginated fetch (under 10K results)."""
         url = f"{self.base_url}/user/findings/"
         all_findings = []
         page = 0
@@ -156,15 +208,56 @@ class ArmorCodeClient:
                 break
             page += 1
 
-        self._findings = all_findings
-        self._cache_params = {
-            "severities": severities,
-            "statuses": statuses,
-            "days_back": days_back,
-        }
+        return all_findings
 
-        if dump_path:
-            self.dump_json(dump_path)
+    def _chunked_fetch(self, base_filters, base_filter_ops, days_back, total, page_size):
+        """Split a large query into date-range chunks under 10K each.
+
+        Uses binary-style splitting: starts by dividing the date range into
+        even chunks sized to stay under 10K, then fetches each chunk.
+        """
+        now_ms = int(time.time() * 1000)
+        start_ms = now_ms - (days_back * 86400 * 1000)
+
+        # Estimate chunks needed (with headroom)
+        num_chunks = max(2, (total // (self._MAX_RESULTS // 2)) + 1)
+        chunk_duration = (now_ms - start_ms) // num_chunks
+
+        all_findings = []
+        seen_ids = set()
+
+        for i in range(num_chunks):
+            chunk_start = start_ms + (i * chunk_duration)
+            # Overlap by 1ms to avoid boundary gaps
+            chunk_end = start_ms + ((i + 1) * chunk_duration) + 1 if i < num_chunks - 1 else now_ms
+
+            # Build clean filter copies, replacing any existing foundOn
+            chunk_filters = {k: v for k, v in base_filters.items() if k != "foundOn"}
+            chunk_ops = {k: v for k, v in base_filter_ops.items() if k != "foundOn"}
+            chunk_filters["foundOn"] = [str(chunk_start), str(chunk_end)]
+            chunk_ops["foundOn"] = "BETWEEN"
+
+            # Check chunk size first
+            chunk_total = self._probe_count(chunk_filters, chunk_ops)
+
+            if chunk_total > self._MAX_RESULTS:
+                # Recursively split this chunk further
+                chunk_days = (chunk_end - chunk_start) / (86400 * 1000)
+                sub_findings = self._chunked_fetch(
+                    chunk_filters, chunk_ops, chunk_days, chunk_total, page_size,
+                )
+                for f in sub_findings:
+                    fid = f.get("id")
+                    if fid not in seen_ids:
+                        seen_ids.add(fid)
+                        all_findings.append(f)
+            else:
+                chunk_findings = self._paginated_fetch(chunk_filters, chunk_ops, page_size)
+                for f in chunk_findings:
+                    fid = f.get("id")
+                    if fid not in seen_ids:
+                        seen_ids.add(fid)
+                        all_findings.append(f)
 
         return all_findings
 
