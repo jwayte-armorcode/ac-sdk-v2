@@ -58,7 +58,8 @@ def write_excel(findings, repos, severities, days_back, output_path):
     repo_sev = defaultdict(Counter)
     for f in findings:
         repo = (f.get("subProduct") or {}).get("name", "(unmapped)")
-        repo_sev[repo][f.get("severity", "Unknown")] += 1
+        sev_raw = (f.get("severity") or "Unknown").capitalize()
+        repo_sev[repo][sev_raw] += 1
 
     for row, repo in enumerate(repos, 6):
         counts = repo_sev.get(repo, Counter())
@@ -86,7 +87,8 @@ def write_excel(findings, repos, severities, days_back, output_path):
         c.font, c.fill, c.border = header_font, header_fill, thin_border
 
     for row, f in enumerate(findings, 2):
-        sev = f.get("severity", "")
+        sev_raw = f.get("severity", "")
+        sev = sev_raw.capitalize() if sev_raw else ""
         vals = [
             (f.get("subProduct") or {}).get("name", ""),
             sev,
