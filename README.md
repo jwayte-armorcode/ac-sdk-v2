@@ -77,5 +77,5 @@ See `examples/vuln_by_repo.py` for a complete workflow that pulls findings, list
 python examples/vuln_by_repo.py
 
 # Specify repos
-python examples/vuln_by_repo.py tagbo airllm ai-platform-agents
+python examples/vuln_by_repo.py repo_a repo_b 
 ```
