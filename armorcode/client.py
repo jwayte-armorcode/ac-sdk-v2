@@ -506,6 +506,42 @@ class ArmorCodeClient:
         return resp.json()
 
     # ------------------------------------------------------------------
+    # Sub-Products
+    # ------------------------------------------------------------------
+
+    def get_sub_products(self):
+        """List all sub-products (repos/components mapped under products).
+
+        Returns a lightweight list of all sub-products with ``id`` and ``name``.
+
+        Returns:
+            list[dict]: Sub-products with ``id`` and ``name``.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/sub-product/elastic/short",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_sub_product(self, sub_product_id):
+        """Get full detail for a specific sub-product.
+
+        Args:
+            sub_product_id: Sub-product ID.
+
+        Returns:
+            dict: Sub-product detail including parent product, description,
+            owners, environment, and configuration.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/sub-product/{sub_product_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------------
     # Users
     # ------------------------------------------------------------------
 

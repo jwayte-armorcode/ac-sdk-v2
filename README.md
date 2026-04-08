@@ -85,11 +85,13 @@ MYCOMPANY_TOKEN=<bearer-token>
 | `get_team_stats()` | Statistics for all teams |
 | `get_team_leads()` | Users eligible as team leads |
 
-### Products
+### Products & Sub-Products
 
 | Method | Description |
 |--------|-------------|
 | `get_products(page, size)` | Paginated product/application listing |
+| `get_sub_products()` | All sub-products (repos/components) — lightweight id + name |
+| `get_sub_product(sub_product_id)` | Full detail for a sub-product (parent product, owners, env) |
 
 ### Users
 
