@@ -231,11 +231,18 @@ class ArmorCodeClient:
         }
         Path(path).write_text(json.dumps(out, indent=2, default=str))
 
+    # ------------------------------------------------------------------
+    # Finding Statistics
+    # ------------------------------------------------------------------
+
     def get_finding_stats(self, filters=None):
         """Get severity-by-status statistics.
 
+        Args:
+            filters: Optional filter dict to scope the stats.
+
         Returns:
-            dict: Stats object from the API.
+            dict: Stats object with severity counts per status.
         """
         body = {"filters": filters or {}}
         resp = self._session.post(
@@ -246,20 +253,105 @@ class ArmorCodeClient:
         resp.raise_for_status()
         return resp.json()
 
-    def get_repos(self, states=None, page=0, size=100):
+    def get_finding_stats_by_team(self, team_name, environments=None):
+        """Get finding statistics for a specific team.
+
+        Args:
+            team_name: Team name (e.g. ``"team-Security"``).
+            environments: Optional list of environment filters.
+
+        Returns:
+            dict: Team stats with ``id``, ``name``, ``count``, ``severity`` breakdown.
+        """
+        body = {
+            "filters": {
+                "name": team_name,
+                "environmentName": environments or [],
+            }
+        }
+        resp = self._session.post(
+            f"{self.base_url}/user/findings/stat/team",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_finding_stats_by_product(self, product_name, environments=None):
+        """Get finding statistics for a specific product.
+
+        Args:
+            product_name: Product name (e.g. ``"team-Security"``).
+            environments: Optional list of environment filters.
+
+        Returns:
+            dict: Product stats with ``id``, ``name``, ``count``, ``severity`` breakdown.
+        """
+        body = {
+            "filters": {
+                "name": product_name,
+                "environmentName": environments or [],
+            }
+        }
+        resp = self._session.post(
+            f"{self.base_url}/user/findings/stat/product",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------------
+    # CSV Export
+    # ------------------------------------------------------------------
+
+    def export_findings_csv(self, output_path, filters=None, filter_operations=None):
+        """Export findings as CSV.
+
+        Args:
+            output_path: File path to write the CSV to.
+            filters: Filter dict (same format as ``get_findings``).
+            filter_operations: Filter operations dict (e.g. ``{"foundOn": "GREATER_THAN"}``).
+
+        Returns:
+            str: The output path written.
+        """
+        body = {
+            "filters": filters or {},
+            "filterOperations": filter_operations or {},
+        }
+        resp = self._session.post(
+            f"{self.base_url}/user/findings/download/csv",
+            json=body,
+            timeout=self._timeout * 3,
+        )
+        resp.raise_for_status()
+        Path(output_path).write_bytes(resp.content)
+        return output_path
+
+    # ------------------------------------------------------------------
+    # Repositories (SCM)
+    # ------------------------------------------------------------------
+
+    def get_repos(self, states=None, sources=None, page=0, size=100):
         """List SCM repositories from the tenant.
 
         Args:
-            states: Repo states to filter, e.g. ``["ACTIVE"]``.
+            states: Repo states, e.g. ``["ACTIVE", "INACTIVE", "DORMANT"]``.
+            sources: SCM sources, e.g. ``["GITHUB", "GITLAB", "BITBUCKET"]``.
             page: Page number (0-based).
             size: Page size.
 
         Returns:
-            dict: API response with ``content`` and ``totalElements``.
+            dict: Paginated response with ``content`` and ``totalElements``.
+                  The API wraps this in a ``data`` envelope which is unwrapped
+                  automatically.
         """
         body = {}
         if states:
             body["repositoryStates"] = list(states)
+        if sources:
+            body["sources"] = list(sources)
         resp = self._session.post(
             f"{self.base_url}/api/scm/discover/repos",
             params={"page": page, "size": size},
@@ -267,13 +359,71 @@ class ArmorCodeClient:
             timeout=self._timeout,
         )
         resp.raise_for_status()
-        return resp.json()
+        result = resp.json()
+        # Unwrap the data envelope if present
+        if "data" in result and isinstance(result["data"], dict):
+            return result["data"]
+        return result
 
-    def get_teams(self):
-        """List all teams.
+    def get_repo_filters(self):
+        """Get available filter options for repository discovery.
 
         Returns:
-            list[dict]: Teams with ``id`` and ``name``.
+            dict: Filter options (states, sources, tiers, etc.).
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/scm/discover/repo-filters",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_repo_details(self, status_type="ACTIVE", include_ignored=False):
+        """Get detailed repository information.
+
+        Args:
+            status_type: One of ``ACTIVE``, ``INACTIVE``, ``DORMANT``.
+            include_ignored: Include ignored repos.
+
+        Returns:
+            list[dict] or dict: Repository details.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/tools/git/repos/details",
+            params={
+                "gitReposStatusType": status_type,
+                "includeIgnored": include_ignored,
+            },
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_repo_contributors(self, repo_id):
+        """Get contributors for a specific repository.
+
+        Args:
+            repo_id: Repository ID.
+
+        Returns:
+            list[dict]: Contributors.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/tools/git/repo/{repo_id}/contributors",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------------
+    # Teams
+    # ------------------------------------------------------------------
+
+    def get_teams(self):
+        """List all teams (id + name).
+
+        Returns:
+            list[dict]: Teams.
         """
         resp = self._session.get(
             f"{self.base_url}/api/team/all-teams",
@@ -282,25 +432,105 @@ class ArmorCodeClient:
         resp.raise_for_status()
         return resp.json()
 
-    def get_products(self, page=0, size=100):
-        """List products (applications).
+    def get_team(self, team_id):
+        """Get full detail for a specific team.
+
+        Args:
+            team_id: Team ID.
 
         Returns:
-            dict: Paginated response with ``content`` and ``totalElements``.
+            dict: Team detail (members, owners, lead, description, properties).
         """
         resp = self._session.get(
-            f"{self.base_url}/user/product/elastic/paged",
-            params={"page": page, "size": size},
+            f"{self.base_url}/api/team/{team_id}",
             timeout=self._timeout,
         )
         resp.raise_for_status()
         return resp.json()
 
-    def get_tools(self):
-        """List configured security tools.
+    def get_team_stats(self, environment="Production"):
+        """Get statistics for all teams.
+
+        Args:
+            environment: Environment name (required by the API).
+                         Defaults to ``"Production"``.
 
         Returns:
-            list[dict]: Tool status objects.
+            list[dict]: Per-team stats with risk scores, member counts, products.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/team/all-team-stats",
+            params={"environment": environment},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_team_leads(self):
+        """Get users who can be team leads.
+
+        Returns:
+            list[dict]: Team lead users.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/team-leads",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------------
+    # Products
+    # ------------------------------------------------------------------
+
+    def get_products(self, page=0, size=100, search=None):
+        """List products (applications).
+
+        Args:
+            page: Page number (0-based).
+            size: Page size (max 100).
+            search: Optional search string to filter by name.
+
+        Returns:
+            dict: Paginated response with ``content`` and ``totalElements``.
+        """
+        params = {"pageNumber": page, "pageSize": size}
+        if search:
+            params["search"] = search
+        resp = self._session.get(
+            f"{self.base_url}/user/product/elastic/paged",
+            params=params,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------------
+    # Users
+    # ------------------------------------------------------------------
+
+    def get_users(self):
+        """List all users in the tenant.
+
+        Returns:
+            list[dict]: Users with roles and activity status.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/data/users",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------------
+    # Security Tools
+    # ------------------------------------------------------------------
+
+    def get_tools(self):
+        """List configured application security tools (scanners).
+
+        Returns:
+            list[dict]: Tool status objects with config/operational status.
         """
         resp = self._session.get(
             f"{self.base_url}/user/tools/appsec-tools/status",
@@ -309,14 +539,146 @@ class ArmorCodeClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_integration_tools(self):
+        """List configured integration tools (ticketing, notifications, etc.).
+
+        Returns:
+            list[dict]: Integration tool status objects.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/tools/integration-tools/status",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------------
+    # Runbooks
+    # ------------------------------------------------------------------
+
     def get_runbooks(self):
         """List all runbook automations.
 
         Returns:
-            list[dict]: Runbook objects.
+            list[dict]: Runbooks with id, label, type, enabled, status,
+            executionCount.
         """
         resp = self._session.get(
             f"{self.base_url}/api/runbook",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------------
+    # SLA
+    # ------------------------------------------------------------------
+
+    def get_sla_tiers(self):
+        """Get SLA tier definitions.
+
+        Returns:
+            list[dict]: SLA tiers with policies and thresholds.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/findingSla/tiers",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_sla_stats(self, filters=None):
+        """Get overall SLA statistics (breach trends, severity breakdown).
+
+        Args:
+            filters: Optional filter dict to scope the stats.
+
+        Returns:
+            dict: SLA stats with ``slaBreached`` trend data and severity counts.
+        """
+        body = {"filters": filters or {}}
+        resp = self._session.post(
+            f"{self.base_url}/user/findingSla/sla-stats",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_team_sla_stats(self, filters=None, agg_fields=None):
+        """Get SLA statistics broken down by team.
+
+        Args:
+            filters: Optional filter dict.
+            agg_fields: Aggregation fields, e.g. ``["teamId"]``.
+                        Defaults to ``["teamId"]``.
+
+        Returns:
+            list[dict]: Per-team SLA stats. May be empty if not configured.
+        """
+        body = {
+            "filters": filters or {},
+            "aggFields": agg_fields or ["teamId"],
+        }
+        resp = self._session.post(
+            f"{self.base_url}/user/findingSla/team-sla-stats",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_mttr_stats(self, filters=None):
+        """Get mean-time-to-remediate statistics.
+
+        Args:
+            filters: Optional filter dict.
+
+        Returns:
+            dict: MTTR statistics.
+        """
+        body = {"filters": filters or {}}
+        resp = self._session.post(
+            f"{self.base_url}/api/finding-sla/mean-remediation-stats",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------------
+    # Tenant Configuration
+    # ------------------------------------------------------------------
+
+    def get_tenant_config(self, config_type):
+        """Get a tenant configuration value.
+
+        Args:
+            config_type: Config key, e.g. ``"ENABLE_ANYA_AI_ASSISTANT"``.
+
+        Returns:
+            dict: Configuration value.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/tenant-config",
+            params={"configType": config_type},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------------
+    # API Discovery
+    # ------------------------------------------------------------------
+
+    def get_api_docs(self):
+        """Fetch the full OpenAPI spec for the tenant.
+
+        Returns:
+            dict: OpenAPI 3.x specification.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/v3/api-docs",
             timeout=self._timeout,
         )
         resp.raise_for_status()
