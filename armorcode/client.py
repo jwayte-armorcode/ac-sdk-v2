@@ -664,13 +664,39 @@ class ArmorCodeClient:
         resp.raise_for_status()
         return resp.json()
 
-    def create_sub_product(self, name, product_id, description=None,
-                           environment_id=None, tier=None, extra=None):
+    def _lookup_product_id(self, product_name):
+        """Resolve a product name to its id via exact-match lookup.
+
+        Raises ``ValueError`` if no product or multiple products match.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/product/elastic/paged",
+            params={"pageNumber": 0, "pageSize": 100, "search": product_name},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        content = resp.json().get("content", [])
+        matches = [p for p in content if p.get("name") == product_name]
+        if not matches:
+            raise ValueError(f"No product found with name {product_name!r}")
+        if len(matches) > 1:
+            ids = [m.get("id") for m in matches]
+            raise ValueError(
+                f"Multiple products named {product_name!r} found: {ids}. "
+                f"Pass product_id explicitly to disambiguate."
+            )
+        return int(matches[0]["id"])
+
+    def create_sub_product(self, name, product_name=None, *, product_id=None,
+                           description=None, environment_id=None, tier=None,
+                           extra=None):
         """Create a new sub-product under an existing product.
 
         Args:
             name: Sub-product name (required, 2-228 chars).
-            product_id: Parent product id (required).
+            product_name: Parent product name. Looked up via exact match.
+                          Either ``product_name`` or ``product_id`` is required.
+            product_id: Parent product id (alternative to ``product_name``).
             description: Optional description.
             environment_id: Optional environment id.
             tier: Optional tier string (e.g. ``"Tier 1"``).
@@ -681,6 +707,11 @@ class ArmorCodeClient:
             dict: The newly created sub-product, including its server-assigned
             ``id``.
         """
+        if product_id is None:
+            if not product_name:
+                raise ValueError("Either product_name or product_id is required")
+            product_id = self._lookup_product_id(product_name)
+
         body = {
             "name": name,
             "product": {"id": product_id},
