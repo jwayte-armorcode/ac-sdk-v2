@@ -598,6 +598,36 @@ class ArmorCodeClient:
         resp.raise_for_status()
         return resp.json()
 
+    def create_product(self, name, description=None, type_id=None, extra=None):
+        """Create a new product (group/application).
+
+        Args:
+            name: Product name (required, 2-228 chars).
+            description: Optional description.
+            type_id: Optional product type id. If omitted the tenant default
+                     ("N/A") is assigned by the server.
+            extra: Optional dict merged into the request body for advanced
+                   fields (e.g. ``status``, ``versionNumber``, owners).
+
+        Returns:
+            dict: The newly created product, including its server-assigned
+            ``id``.
+        """
+        body = {"name": name}
+        if description is not None:
+            body["description"] = description
+        if type_id is not None:
+            body["type"] = {"id": type_id}
+        if extra:
+            body.update(extra)
+        resp = self._session.post(
+            f"{self.base_url}/user/product",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     # ------------------------------------------------------------------
     # Sub-Products
     # ------------------------------------------------------------------
@@ -629,6 +659,43 @@ class ArmorCodeClient:
         """
         resp = self._session.get(
             f"{self.base_url}/api/sub-product/{sub_product_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def create_sub_product(self, name, product_id, description=None,
+                           environment_id=None, tier=None, extra=None):
+        """Create a new sub-product under an existing product.
+
+        Args:
+            name: Sub-product name (required, 2-228 chars).
+            product_id: Parent product id (required).
+            description: Optional description.
+            environment_id: Optional environment id.
+            tier: Optional tier string (e.g. ``"Tier 1"``).
+            extra: Optional dict merged into the request body for advanced
+                   fields (e.g. owners, ``classType``, ``hostedCloud``).
+
+        Returns:
+            dict: The newly created sub-product, including its server-assigned
+            ``id``.
+        """
+        body = {
+            "name": name,
+            "product": {"id": product_id},
+        }
+        if description is not None:
+            body["description"] = description
+        if environment_id is not None:
+            body["environment"] = {"id": environment_id}
+        if tier is not None:
+            body["tier"] = tier
+        if extra:
+            body.update(extra)
+        resp = self._session.post(
+            f"{self.base_url}/api/sub-product",
+            json=body,
             timeout=self._timeout,
         )
         resp.raise_for_status()

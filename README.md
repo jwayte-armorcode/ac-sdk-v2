@@ -90,8 +90,22 @@ MYCOMPANY_TOKEN=<bearer-token>
 | Method | Description |
 |--------|-------------|
 | `get_products(page, size)` | Paginated product/application listing |
+| `create_product(name, description, type_id, extra)` | Create a new product (returns the new id) |
 | `get_sub_products()` | All sub-products (repos/components) — lightweight id + name |
 | `get_sub_product(sub_product_id)` | Full detail for a sub-product (parent product, owners, env) |
+| `create_sub_product(name, product_id, description, environment_id, tier, extra)` | Create a new sub-product under a parent product |
+
+```python
+# Create a product, then a sub-product under it
+product = ac.create_product(name="payments-platform", description="Payments group")
+sub = ac.create_sub_product(
+    name="payments-api",
+    product_id=product["id"],
+    description="REST API service",
+    tier="Tier 1",
+)
+print(sub["id"])
+```
 
 ### Users
 
