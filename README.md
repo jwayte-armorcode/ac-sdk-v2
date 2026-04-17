@@ -93,14 +93,14 @@ MYCOMPANY_TOKEN=<bearer-token>
 | `create_product(name, description, type_id, extra)` | Create a new product (returns the new id) |
 | `get_sub_products()` | All sub-products (repos/components) — lightweight id + name |
 | `get_sub_product(sub_product_id)` | Full detail for a sub-product (parent product, owners, env) |
-| `create_sub_product(name, product_id, description, environment_id, tier, extra)` | Create a new sub-product under a parent product |
+| `create_sub_product(name, product_name, product_id, description, environment_id, tier, extra)` | Create a new sub-product under a parent product (pass `product_name` for lookup, or `product_id` directly) |
 
 ```python
-# Create a product, then a sub-product under it
-product = ac.create_product(name="payments-platform", description="Payments group")
+# Create a product, then a sub-product under it (by name — id is looked up)
+ac.create_product(name="payments-platform", description="Payments group")
 sub = ac.create_sub_product(
     name="payments-api",
-    product_id=product["id"],
+    product_name="payments-platform",
     description="REST API service",
     tier="Tier 1",
 )
