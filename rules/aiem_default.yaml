@@ -1,0 +1,109 @@
+# AIEM deterministic triage rules — default starter set.
+#
+# Rules are evaluated top-to-bottom; the first match wins. Items that match
+# no rule are routed to AI-assisted review.
+#
+# Supported match conditions (see armorcode/aiem_triage.py for the full list):
+#   status_in, risk_level_in, vendor_in, vendor_not_in, type_in,
+#   detection_source_in, name_contains_any,
+#   eu_ai_act_tier_in, deployment_model_in, data_handling_has,
+#   data_handling_any, security_feature_has, security_features_all,
+#   has_compliance_cert, has_any_compliance_cert,
+#   user_count_gte, user_count_lt
+#
+# Action fields map 1:1 to the AIEM update API:
+#   status           — pending | approved | conditional | rejected | reassessment
+#   risk_level       — critical | high | moderate | low
+#   notes            — free text
+#   approval         — {scope, departments, conditions, expires_at}
+#   compliance_tags  — list of strings
+
+meta:
+  name: aiem-default
+  version: 1
+  description: Starter triage rules for AIEM inventory
+
+rules:
+
+  # --- R4: Elevated risk always gets human eyes ---------------------
+  - id: R4_elevated_risk_reassess
+    description: High/critical risk items need human security review
+    match:
+      risk_level_in: [high, critical]
+    action:
+      status: reassessment
+      notes: "Elevated risk_level requires security team review before approval."
+
+  # --- R5: EU AI Act High Risk tier ---------------------------------
+  - id: R5_eu_ai_act_high_risk
+    description: EU AI Act High Risk apps require formal risk assessment
+    match:
+      eu_ai_act_tier_in: [High Risk]
+    action:
+      status: reassessment
+      notes: "EU AI Act High Risk tier — requires Article 9 risk management assessment."
+
+  # --- R6: Known-bad vendors / patterns -----------------------------
+  - id: R6_blocklist_vendors
+    description: Reject vendors on the explicit blocklist
+    match:
+      vendor_in: []   # populate per-tenant, e.g. ['ShadyAI Inc.']
+    action:
+      status: rejected
+      notes: "Vendor is on the organization blocklist."
+
+  - id: R7_blocklist_name_patterns
+    description: Reject apps whose name matches known-bad patterns
+    match:
+      name_contains_any: []   # populate per-tenant, e.g. ['undress', 'deepfake']
+    action:
+      status: rejected
+      notes: "App name matches a disallowed pattern."
+
+  # --- R1: Trusted vendors with enterprise compliance ---------------
+  - id: R1_trusted_vendor_soc2
+    description: Auto-approve trusted vendors with SOC 2 Type II
+    match:
+      vendor_in:
+        - Adobe Inc.
+        - Microsoft Corporation
+        - Microsoft
+        - Google LLC
+        - Google
+        - Anthropic
+        - OpenAI
+      has_compliance_cert: SOC 2 Type II
+      eu_ai_act_tier_in: [Minimal Risk, Limited Risk]
+    action:
+      status: approved
+      approval:
+        scope: organization
+      notes: "Auto-approved: trusted vendor with SOC 2 Type II; EU AI Act Minimal/Limited tier."
+
+  # --- R2: Conditional approve — moderate risk but with controls ----
+  - id: R2_conditional_with_controls
+    description: Moderate risk but has SSO+MFA+training opt-out → conditional
+    match:
+      risk_level_in: [moderate]
+      security_features_all: [Sso Supported, Mfa Supported]
+      data_handling_has: Training Opt Out
+    action:
+      status: conditional
+      approval:
+        scope: organization
+        conditions: "SSO + MFA required; training opt-out must remain enabled."
+      notes: "Conditional approval: moderate risk offset by SSO, MFA, and training opt-out."
+
+  # --- R3: Low risk with EU AI Act Minimal tier → approve -----------
+  - id: R3_low_risk_minimal_tier
+    description: Low risk + EU AI Act Minimal tier → organization-wide approve
+    match:
+      risk_level_in: [low]
+      eu_ai_act_tier_in: [Minimal Risk]
+    action:
+      status: approved
+      approval:
+        scope: organization
+      notes: "Auto-approved: low risk_level and EU AI Act Minimal Risk tier."
+
+  # --- Everything else falls through to AI review (unmatched) -------
