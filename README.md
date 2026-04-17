@@ -194,3 +194,50 @@ python examples/vuln_by_repo.py
 # Specify repos
 python examples/vuln_by_repo.py repo_a repo_b 
 ```
+
+## AIEM — AI Exposure Management
+
+The SDK wraps the `/api/v1/aiem/*` endpoints used by ArmorCode's AI Exposure Management.
+
+```python
+# Reference catalog (public AI-app knowledge base)
+catalog = ac.aiem_list_catalog(search="Claude")
+
+# Tenant-specific inventory (triage target)
+items = ac.aiem_get_all_inventory()
+ac.aiem_update_inventory_item(
+    items[0]["id"],
+    status="approved",
+    approval={"scope": "organization"},
+    notes="Reviewed and approved",
+)
+```
+
+### Deterministic + AI triage CLI
+
+A rule engine (`armorcode/aiem_triage.py`), default rules (`rules/aiem_default.yaml`), and a CLI (`cli/aiem.py`) cover the common triage loop:
+
+```bash
+# Summarize current inventory
+python -m cli.aiem --env env scan
+
+# Dry-run the default rules
+python -m cli.aiem --env env plan -v
+
+# Apply rule-based triage (prompts per item; use --yes to skip)
+python -m cli.aiem --env env apply
+
+# Queue rule-unmatched items for AI review
+python -m cli.aiem --env env review --out queue.json
+
+# Option A — call Anthropic directly (requires ANTHROPIC_API_KEY + 'anthropic' pkg)
+python -m cli.aiem ai-review --mode api --queue queue.json --out proposals.json
+
+# Option B — hand the queue to Claude Code / any LLM, save the proposals JSON,
+#           then:
+python -m cli.aiem --env env apply-ai proposals.json
+```
+
+Rules are YAML — add vendor allowlists/blocklists, SSO/MFA conditionals, EU AI Act tiers, etc. See `rules/aiem_default.yaml` for the full schema.
+
+Requires `PyYAML` (always for the triage engine) and optionally `anthropic` (only for `ai-review --mode api`).
