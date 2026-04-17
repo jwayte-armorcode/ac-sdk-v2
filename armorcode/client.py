@@ -57,10 +57,21 @@ class ArmorCodeClient:
     def from_env(cls, env_path="env", token_key=None, **kwargs):
         """Create a client from an env file.
 
+        Expected env format::
+
+            TENANT_URL=<https://my-tenant-url>
+            API_TOKEN=<api-token>
+
+        ``TENANT_URL`` may be a bare hostname or a full ``https://...`` URL.
+
+        For backward compatibility, this also accepts ``*_TOKEN`` (legacy
+        per-tenant naming like ``ACME_TOKEN``) and lowercase ``token``/``url``.
+
         Args:
-            env_path: Path to env file containing TENANT_URL and a token variable.
-            token_key: Explicit key name for the token. If None, uses the first
-                       key ending in ``_TOKEN``.
+            env_path: Path to env file.
+            token_key: Explicit key name for the token. If None, tries
+                       ``API_TOKEN`` first, then any ``*_TOKEN`` key, then
+                       lowercase ``token``.
         """
         config = {}
         with open(env_path) as f:
@@ -81,14 +92,19 @@ class ArmorCodeClient:
         if token_key:
             token = config[token_key]
         else:
-            token = next(
-                (v for k, v in config.items() if k.endswith("_TOKEN")),
-                None,
-            ) or config.get("token")
+            # Preferred: API_TOKEN. Fall back to *_TOKEN (legacy) or token (lower).
+            token = (
+                config.get("API_TOKEN")
+                or next(
+                    (v for k, v in config.items() if k.endswith("_TOKEN")),
+                    None,
+                )
+                or config.get("token")
+            )
             if not token:
                 raise ValueError(
                     "No token found in env file "
-                    "(expected *_TOKEN, TOKEN, or token)"
+                    "(expected API_TOKEN, *_TOKEN, or token)"
                 )
 
         return cls(tenant_url, token, **kwargs)
