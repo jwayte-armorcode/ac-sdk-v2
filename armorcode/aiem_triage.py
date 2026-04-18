@@ -8,7 +8,7 @@ describe what should be done to each item.
 Rule config format (YAML)::
 
     meta:
-      name: motleyfool-default
+      name: my-tenant-rules
       version: 1
     rules:
       - id: R1_trusted_vendor
