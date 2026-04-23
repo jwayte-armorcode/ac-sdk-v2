@@ -58,6 +58,21 @@ API_TOKEN=<api-token>
 - **Tags** — always use full `key:value` strings (e.g. `"superowner:user@example.com"`); key-only filters return 0 results
 - Date filters — pass `days_back` as an integer; SDK handles epoch-ms conversion.
 
+## Tickets
+
+Query tickets by product, sub-product, and/or assignee — all filters are optional and combinable:
+
+```python
+ac.get_tickets(product="my-app")
+ac.get_tickets(product="my-app", assignee="Julian Wayte")
+ac.get_tickets(sub_product="my-api")
+ac.get_tickets(sub_product="my-api", assignee="Julian Wayte")
+ac.get_tickets(assignee="Julian Wayte")
+ac.get_tickets()  # all tickets
+```
+
+Product and sub-product accept names (resolved to IDs internally) or integer IDs. Assignee is the display name from the ticketing system.
+
 ## Products & Sub-Products
 
 Create and update products/sub-products with tags in a single call:
