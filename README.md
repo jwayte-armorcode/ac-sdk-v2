@@ -4,19 +4,29 @@ Lightweight Python SDK for the ArmorCode REST API.
 
 ## Quick Start
 
-```python
-from armorcode import ArmorCodeClient
+1. Create an `env` file in the repo root (see [Env File Format](#env-file-format) below).
+2. Install the core dependency: `pip install requests`.
+3. Run the demo to verify connectivity:
 
-ac = ArmorCodeClient.from_env("env")
+   ```bash
+   python examples/demo.py
+   ```
 
-# Pull Critical + High findings from the last 14 days
-findings = ac.get_findings(severities=["Critical", "High"], days_back=14)
+   Prints findings counts, repos, teams, products, and runbooks for the configured tenant.
 
-for repo, count in ac.list_repos():
-    print(f"{repo}: {count}")
-```
+4. Or use the SDK directly:
 
-Runnable demo: `python examples/demo.py`
+   ```python
+   from armorcode import ArmorCodeClient
+
+   ac = ArmorCodeClient.from_env("env")
+
+   # Pull Critical + High findings from the last 14 days
+   findings = ac.get_findings(severities=["Critical", "High"], days_back=14)
+
+   for repo, count in ac.list_repos():
+       print(f"{repo}: {count}")
+   ```
 
 ## Installation
 
@@ -45,4 +55,28 @@ API_TOKEN=<api-token>
 
 - **Severity** — title-case in filters: `Critical`, `High`, `Medium`, `Low`, `Info`
 - **Status** — uppercase: `OPEN`, `CONFIRMED`, `FALSEPOSITIVE`, `ACCEPTRISK`, `MITIGATED`, `SUPPRESSED`, `TRIAGE`, `IN_PROGRESS`, `CONTROLLED`
+- **Tags** — always use full `key:value` strings (e.g. `"superowner:user@example.com"`); key-only filters return 0 results
 - Date filters — pass `days_back` as an integer; SDK handles epoch-ms conversion.
+
+## Products & Sub-Products
+
+Create and update products/sub-products with tags in a single call:
+
+```python
+# Create with tags
+p = ac.create_product(
+    name="my-app",
+    description="My application",
+    tags=["env:production", "superowner:owner@example.com"],
+)
+
+sub = ac.create_sub_product(
+    name="my-api",
+    product_name="my-app",
+    tags=["env:production", "team:security"],
+)
+
+# Update tags (full replacement — include all tags you want to keep)
+ac.update_product(product_name="my-app", tags=["env:production", "superowner:newowner@example.com"])
+ac.update_sub_product(sub["id"], tags=["env:production", "team:appsec"])
+```
