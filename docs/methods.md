@@ -58,17 +58,17 @@ Product and sub-product methods accept names wherever an ID is required — the 
 
 ```python
 # Create with tags
-ac.create_product("payments-platform", tags=["env:production", "superowner:owner@example.com"])
-sub = ac.create_sub_product("payments-api", product_name="payments-platform", tags=["env:production"])
+ac.create_product("my-product", tags=["env:production", "superowner:owner@example.com"])
+sub = ac.create_sub_product("my-sub-product", product_name="my-product", tags=["env:production"])
 
 # Full tag replacement
-ac.update_product(product_name="payments-platform", tags=["env:production", "superowner:new@example.com"])
+ac.update_product(product_name="my-product", tags=["env:production", "superowner:new@example.com"])
 
 # Append tags
-ac.update_product_add_tags(product_name="payments-platform", tags=["team:security"])
+ac.update_product_add_tags(product_name="my-product", tags=["team:security"])
 
 # Set/overwrite a single tag key
-ac.update_product_set_tag("superowner:new@example.com", product_name="payments-platform")
+ac.update_product_set_tag("superowner:new@example.com", product_name="my-product")
 ac.update_sub_product_set_tag(sub["id"], "superowner:new@example.com")
 ```
 
@@ -81,13 +81,13 @@ Product and sub-product accept names (resolved to IDs internally) or integer IDs
 | `get_tickets(product, sub_product, assignee, page, size)` | Retrieve tickets; all filters optional and combinable. Returns `{"tickets": [...], "totalElements": int, "totalPages": int}` |
 
 ```python
-ac.get_tickets(product="payments-platform")
-ac.get_tickets(product="payments-platform", assignee="Julian Wayte")
-ac.get_tickets(sub_product="payments-api")
-ac.get_tickets(sub_product="payments-api", assignee="Julian Wayte")
-ac.get_tickets(assignee="Julian Wayte")
-ac.get_tickets()                                        # all tickets
-ac.get_tickets(product="payments-platform", page=1, size=50)  # paginate
+ac.get_tickets(product="my-product")
+ac.get_tickets(product="my-product", assignee="Jane Smith")
+ac.get_tickets(sub_product="my-sub-product")
+ac.get_tickets(sub_product="my-sub-product", assignee="Jane Smith")
+ac.get_tickets(assignee="Jane Smith")
+ac.get_tickets()                                           # all tickets
+ac.get_tickets(product="my-product", page=1, size=50)     # paginate
 ```
 
 ## Users
