@@ -1,19 +1,16 @@
 # SDK Methods
 
-All methods are on the `ArmorCodeClient` class. See the docstrings in
-`armorcode/client.py` for full parameter details.
-
-For AIEM-specific methods, see [aiem.md](aiem.md).
+All methods are on the `ArmorCodeClient` class. For filter values and finding-specific behaviour see [findings.md](findings.md). For AIEM methods see [aiem.md](aiem.md).
 
 ## Findings
 
 | Method | Description |
 |--------|-------------|
-| `get_findings(severities, statuses, days_back, extra_filters, dump_path)` | Bulk pull findings with filters; caches results locally; auto-chunks if >10K ([details](findings.md)) |
+| `get_findings(severities, statuses, days_back, extra_filters, dump_path, size)` | Bulk pull with filters; caches locally; auto-chunks if >10K — see [findings.md](findings.md) |
 | `list_repos(findings)` | Repo names + finding counts from cached data |
 | `get_findings_by_repo(repo_name, findings)` | Filter cached findings to one repo |
 | `dump_json(path)` | Write cached findings to JSON |
-| `export_findings_csv(output_path, filters, filter_operations)` | Export findings as CSV file |
+| `export_findings_csv(output_path, filters, filter_operations)` | Bulk export to CSV |
 
 ## Finding Statistics
 
@@ -43,90 +40,54 @@ For AIEM-specific methods, see [aiem.md](aiem.md).
 
 ## Products & Sub-Products
 
+Product and sub-product methods accept names wherever an ID is required — the SDK resolves names to IDs internally.
+
 | Method | Description |
 |--------|-------------|
-| `get_products(page, size, search)` | Paginated product/application listing |
-| `create_product(name, description, type_id, tags, extra)` | Create a new product with optional tags (returns the new id) |
-| `update_product(product_name, product_id, name, description, tags, extra)` | Update an existing product — resolves by name; tags replace existing set |
-| `update_product_add_tags(product_name, product_id, tags)` | Add one or more tags to a product without touching existing tags |
-| `update_product_set_tag(key_value, product_name, product_id)` | Set a tag by key — adds if absent, replaces if key already exists |
-| `get_sub_products()` | All sub-products (repos/components) — lightweight id + name |
-| `get_sub_product(sub_product_id)` | Full detail for a sub-product (parent product, owners, env) |
-| `create_sub_product(name, product_name, product_id, description, environment_id, tier, tags, extra)` | Create a new sub-product under a parent product with optional tags |
-| `update_sub_product(sub_product_id, name, description, tags, extra)` | Update an existing sub-product — tags replace existing set |
-| `update_sub_product_add_tags(sub_product_id, tags)` | Add one or more tags to a sub-product without touching existing tags |
-| `update_sub_product_set_tag(sub_product_id, key_value)` | Set a tag by key — adds if absent, replaces if key already exists |
+| `get_products(page, size, search)` | Paginated product listing |
+| `create_product(name, description, type_id, tags, extra)` | Create a product |
+| `update_product(product_name, product_id, name, description, tags, extra)` | Update a product — `tags` replaces the full existing set |
+| `update_product_add_tags(product_name, product_id, tags)` | Append tags without touching existing ones |
+| `update_product_set_tag(key_value, product_name, product_id)` | Set one tag by key — adds if absent, replaces if key exists |
+| `get_sub_products()` | All sub-products — lightweight id + name list |
+| `get_sub_product(sub_product_id)` | Full sub-product detail |
+| `create_sub_product(name, product_name, product_id, description, environment_id, tier, tags, extra)` | Create a sub-product under a parent product |
+| `update_sub_product(sub_product_id, name, description, tags, extra)` | Update a sub-product — `tags` replaces the full existing set |
+| `update_sub_product_add_tags(sub_product_id, tags)` | Append tags without touching existing ones |
+| `update_sub_product_set_tag(sub_product_id, key_value)` | Set one tag by key — adds if absent, replaces if key exists |
 
 ```python
-# Create a product with tags, then a sub-product under it
-ac.create_product(
-    name="payments-platform",
-    description="Payments group",
-    tags=["env:production", "team:payments", "superowner:owner@example.com"],
-)
-sub = ac.create_sub_product(
-    name="payments-api",
-    product_name="payments-platform",
-    description="REST API service",
-    tier="Tier 1",
-    tags=["env:production", "team:payments"],
-)
-print(sub["id"])
+# Create with tags
+ac.create_product("payments-platform", tags=["env:production", "superowner:owner@example.com"])
+sub = ac.create_sub_product("payments-api", product_name="payments-platform", tags=["env:production"])
 
-# Update tags on an existing product (replaces all existing tags)
-ac.update_product(
-    product_name="payments-platform",
-    tags=["env:production", "team:payments", "superowner:newowner@example.com"],
-)
+# Full tag replacement
+ac.update_product(product_name="payments-platform", tags=["env:production", "superowner:new@example.com"])
 
-# Update tags on an existing sub-product
-ac.update_sub_product(
-    sub["id"],
-    tags=["env:production", "team:appsec"],
-)
-```
+# Append tags
+ac.update_product_add_tags(product_name="payments-platform", tags=["team:security"])
 
-> **Tags note:** `update_product` and `update_sub_product` perform a full tag replacement — pass the complete desired tag list. Use `update_product_add_tags` / `update_sub_product_add_tags` to append without disturbing existing tags, or `update_product_set_tag` / `update_sub_product_set_tag` to set a specific key regardless of its current value.
-
-```python
-# Add tags without touching existing ones
-ac.update_product_add_tags(product_name="my-app", tags=["team:security", "env:prod"])
-ac.update_sub_product_add_tags(sub_id, tags=["team:security"])
-
-# Set (or overwrite) a single tag key
-ac.update_product_set_tag("superowner:owner@example.com", product_name="my-app")
-ac.update_sub_product_set_tag(sub_id, "superowner:owner@example.com")
+# Set/overwrite a single tag key
+ac.update_product_set_tag("superowner:new@example.com", product_name="payments-platform")
+ac.update_sub_product_set_tag(sub["id"], "superowner:new@example.com")
 ```
 
 ## Tickets
 
+Product and sub-product accept names (resolved to IDs internally) or integer IDs. Assignee is the display name from the ticketing system, not an email.
+
 | Method | Description |
 |--------|-------------|
-| `get_tickets(product, sub_product, assignee, page, size)` | Retrieve tickets filtered by any combination of product, sub-product, and assignee. All filters are optional and combinable. Returns `{"tickets": [...], "totalElements": int, "totalPages": int}` |
-
-Product and sub-product can be passed as **names** (looked up to IDs internally) or as integer IDs directly. Assignee is the display name as it appears in the ticketing system (e.g. `"Julian Wayte"`), not an email.
+| `get_tickets(product, sub_product, assignee, page, size)` | Retrieve tickets; all filters optional and combinable. Returns `{"tickets": [...], "totalElements": int, "totalPages": int}` |
 
 ```python
-# By product
 ac.get_tickets(product="payments-platform")
-
-# By product + assignee
 ac.get_tickets(product="payments-platform", assignee="Julian Wayte")
-
-# By sub-product
 ac.get_tickets(sub_product="payments-api")
-
-# By sub-product + assignee
 ac.get_tickets(sub_product="payments-api", assignee="Julian Wayte")
-
-# By assignee only
 ac.get_tickets(assignee="Julian Wayte")
-
-# All tickets (no filter)
-ac.get_tickets()
-
-# Paginate large results
-ac.get_tickets(product="payments-platform", page=1, size=50)
+ac.get_tickets()                                        # all tickets
+ac.get_tickets(product="payments-platform", page=1, size=50)  # paginate
 ```
 
 ## Users
@@ -157,14 +118,9 @@ ac.get_tickets(product="payments-platform", page=1, size=50)
 | `get_team_sla_stats(filters, agg_fields)` | Per-team SLA stats |
 | `get_mttr_stats(filters)` | Mean-time-to-remediate stats |
 
-## Tenant Configuration
+## Tenant & Discovery
 
 | Method | Description |
 |--------|-------------|
 | `get_tenant_config(config_type)` | Read a tenant feature flag or config value |
-
-## API Discovery
-
-| Method | Description |
-|--------|-------------|
 | `get_api_docs()` | Fetch the full OpenAPI spec |
