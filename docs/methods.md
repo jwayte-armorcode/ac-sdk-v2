@@ -98,6 +98,37 @@ ac.update_product_set_tag("superowner:owner@example.com", product_name="my-app")
 ac.update_sub_product_set_tag(sub_id, "superowner:owner@example.com")
 ```
 
+## Tickets
+
+| Method | Description |
+|--------|-------------|
+| `get_tickets(product, sub_product, assignee, page, size)` | Retrieve tickets filtered by any combination of product, sub-product, and assignee. All filters are optional and combinable. Returns `{"tickets": [...], "totalElements": int, "totalPages": int}` |
+
+Product and sub-product can be passed as **names** (looked up to IDs internally) or as integer IDs directly. Assignee is the display name as it appears in the ticketing system (e.g. `"Julian Wayte"`), not an email.
+
+```python
+# By product
+ac.get_tickets(product="payments-platform")
+
+# By product + assignee
+ac.get_tickets(product="payments-platform", assignee="Julian Wayte")
+
+# By sub-product
+ac.get_tickets(sub_product="payments-api")
+
+# By sub-product + assignee
+ac.get_tickets(sub_product="payments-api", assignee="Julian Wayte")
+
+# By assignee only
+ac.get_tickets(assignee="Julian Wayte")
+
+# All tickets (no filter)
+ac.get_tickets()
+
+# Paginate large results
+ac.get_tickets(product="payments-platform", page=1, size=50)
+```
+
 ## Users
 
 | Method | Description |

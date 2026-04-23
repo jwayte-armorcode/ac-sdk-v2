@@ -953,6 +953,67 @@ class ArmorCodeClient:
         return self.update_sub_product(sub_product_id, tags=merged)
 
     # ------------------------------------------------------------------
+    # Tickets
+    # ------------------------------------------------------------------
+
+    def get_tickets(self, *, product=None, sub_product=None, assignee=None,
+                    page=0, size=100):
+        """Retrieve tickets, optionally filtered by product, sub-product, and/or assignee.
+
+        All filters are optional and combinable. Product and sub-product can be
+        passed as names (looked up to IDs internally) or as integer IDs directly.
+
+        Args:
+            product: Product name (str) or id (int) to filter by.
+            sub_product: Sub-product name (str) or id (int) to filter by.
+                         When passed as a name, the first matching sub-product id
+                         is used (names are not guaranteed unique across products —
+                         pass an int id to be precise).
+            assignee: Assignee display name (str) to filter by
+                      (e.g. ``"Julian Wayte"``). This is the name as it appears
+                      in the ticketing system, not an email address.
+            page: Page number (0-based, default 0).
+            size: Page size (default 100).
+
+        Returns:
+            dict: ``{"tickets": [...], "totalElements": int, "totalPages": int}``
+        """
+        params = {"page": page, "size": size}
+
+        if product is not None:
+            if isinstance(product, str):
+                product = self._lookup_product_id(product)
+            params["product"] = product
+
+        if sub_product is not None:
+            if isinstance(sub_product, int):
+                params["subProduct"] = sub_product
+            else:
+                # Resolve name → id via short listing
+                sps = self.get_sub_products()
+                matches = [sp for sp in sps if sp.get("name") == sub_product]
+                if not matches:
+                    raise ValueError(f"No sub-product found with name {sub_product!r}")
+                params["subProduct"] = matches[0]["id"]
+
+        if assignee is not None:
+            params["assignee"] = assignee
+
+        resp = self._session.get(
+            f"{self.base_url}/api/v2/tickets",
+            params=params,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        data = body.get("data", body) if isinstance(body, dict) else body
+        return {
+            "tickets": data.get("content", []),
+            "totalElements": data.get("totalElements", 0),
+            "totalPages": data.get("totalPages", 0),
+        }
+
+    # ------------------------------------------------------------------
     # Users
     # ------------------------------------------------------------------
 
