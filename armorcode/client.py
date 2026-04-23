@@ -680,18 +680,18 @@ class ArmorCodeClient:
                 raise ValueError("Either product_name or product_id is required")
             product_id = self._lookup_product_id(product_name)
 
-        # Fetch current state so we can carry forward required fields
+        # Fetch current state and send it back in full to satisfy the API's
+        # "wide range update" validation (rejects requests missing >~50% of fields)
         resp = self._session.get(
             f"{self.base_url}/user/product/{product_id}",
             timeout=self._timeout,
         )
         resp.raise_for_status()
-        current = resp.json()
+        body = resp.json()
+        body["id"] = product_id
 
-        body = {
-            "id": product_id,
-            "name": name if name is not None else current.get("name"),
-        }
+        if name is not None:
+            body["name"] = name
         if description is not None:
             body["description"] = description
         if tags is not None:
@@ -829,19 +829,13 @@ class ArmorCodeClient:
         Returns:
             dict: The updated sub-product.
         """
-        # Fetch current state to carry forward required fields
-        resp = self._session.get(
-            f"{self.base_url}/api/sub-product/{sub_product_id}",
-            timeout=self._timeout,
-        )
-        resp.raise_for_status()
-        current = resp.json()
+        # Fetch current state and send it back in full to satisfy the API's
+        # "wide range update" validation
+        body = self.get_sub_product(sub_product_id)
+        body["id"] = sub_product_id
 
-        body = {
-            "id": sub_product_id,
-            "name": name if name is not None else current.get("name"),
-            "product": {"id": current["product"]["id"]},
-        }
+        if name is not None:
+            body["name"] = name
         if description is not None:
             body["description"] = description
         if tags is not None:
@@ -856,6 +850,107 @@ class ArmorCodeClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    def update_product_add_tags(self, product_name=None, *, product_id=None,
+                               tags):
+        """Add one or more tags to a product without touching existing tags.
+
+        Args:
+            product_name: Product to update, resolved via exact-match lookup.
+                          Either ``product_name`` or ``product_id`` is required.
+            product_id: Product id (alternative to ``product_name``).
+            tags: List of tag strings to add (e.g. ``["env:prod", "team:security"]``).
+
+        Returns:
+            dict: The updated product.
+        """
+        if product_id is None:
+            if not product_name:
+                raise ValueError("Either product_name or product_id is required")
+            product_id = self._lookup_product_id(product_name)
+
+        resp = self._session.get(
+            f"{self.base_url}/user/product/{product_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        current = resp.json()
+        existing = list(current.get("tags") or [])
+        merged = existing + [t for t in tags if t not in existing]
+
+        return self.update_product(product_id=product_id, tags=merged)
+
+    def update_sub_product_add_tags(self, sub_product_id, tags):
+        """Add one or more tags to a sub-product without touching existing tags.
+
+        Args:
+            sub_product_id: Sub-product id to update (required).
+            tags: List of tag strings to add (e.g. ``["env:prod", "team:security"]``).
+
+        Returns:
+            dict: The updated sub-product.
+        """
+        current = self.get_sub_product(sub_product_id)
+        existing = list(current.get("tags") or [])
+        merged = existing + [t for t in tags if t not in existing]
+        return self.update_sub_product(sub_product_id, tags=merged)
+
+    def update_product_set_tag(self, key_value, product_name=None, *,
+                               product_id=None):
+        """Set a tag value by key on a product, adding it if absent or
+        replacing the existing tag with the same key.
+
+        Args:
+            key_value: Tag string in ``"key:value"`` format. The key portion
+                       (everything before the first ``:``) is used to find and
+                       replace any existing tag with the same key.
+            product_name: Product to update, resolved via exact-match lookup.
+                          Either ``product_name`` or ``product_id`` is required.
+            product_id: Product id (alternative to ``product_name``).
+
+        Returns:
+            dict: The updated product.
+        """
+        if ":" not in key_value:
+            raise ValueError(f"key_value must be in 'key:value' format, got {key_value!r}")
+
+        if product_id is None:
+            if not product_name:
+                raise ValueError("Either product_name or product_id is required")
+            product_id = self._lookup_product_id(product_name)
+
+        resp = self._session.get(
+            f"{self.base_url}/user/product/{product_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        current = resp.json()
+        key = key_value.split(":", 1)[0]
+        existing = [t for t in (current.get("tags") or []) if not t.startswith(f"{key}:")]
+        merged = existing + [key_value]
+        return self.update_product(product_id=product_id, tags=merged)
+
+    def update_sub_product_set_tag(self, sub_product_id, key_value):
+        """Set a tag value by key on a sub-product, adding it if absent or
+        replacing the existing tag with the same key.
+
+        Args:
+            sub_product_id: Sub-product id to update (required).
+            key_value: Tag string in ``"key:value"`` format. The key portion
+                       (everything before the first ``:``) is used to find and
+                       replace any existing tag with the same key.
+
+        Returns:
+            dict: The updated sub-product.
+        """
+        if ":" not in key_value:
+            raise ValueError(f"key_value must be in 'key:value' format, got {key_value!r}")
+
+        current = self.get_sub_product(sub_product_id)
+        key = key_value.split(":", 1)[0]
+        existing = [t for t in (current.get("tags") or []) if not t.startswith(f"{key}:")]
+        merged = existing + [key_value]
+        return self.update_sub_product(sub_product_id, tags=merged)
 
     # ------------------------------------------------------------------
     # Users
