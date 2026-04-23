@@ -623,7 +623,8 @@ class ArmorCodeClient:
         resp.raise_for_status()
         return resp.json()
 
-    def create_product(self, name, description=None, type_id=None, extra=None):
+    def create_product(self, name, description=None, type_id=None, tags=None,
+                       extra=None):
         """Create a new product (group/application).
 
         Args:
@@ -631,6 +632,7 @@ class ArmorCodeClient:
             description: Optional description.
             type_id: Optional product type id. If omitted the tenant default
                      ("N/A") is assigned by the server.
+            tags: Optional list of tag strings (e.g. ``["env:prod", "team:security"]``).
             extra: Optional dict merged into the request body for advanced
                    fields (e.g. ``status``, ``versionNumber``, owners).
 
@@ -643,9 +645,61 @@ class ArmorCodeClient:
             body["description"] = description
         if type_id is not None:
             body["type"] = {"id": type_id}
+        if tags is not None:
+            body["tags"] = tags
         if extra:
             body.update(extra)
         resp = self._session.post(
+            f"{self.base_url}/user/product",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_product(self, product_name=None, *, product_id=None, name=None,
+                       description=None, tags=None, extra=None):
+        """Update an existing product (group/application).
+
+        Args:
+            product_name: Product to update, resolved via exact-match lookup.
+                          Either ``product_name`` or ``product_id`` is required.
+            product_id: Product id (alternative to ``product_name``).
+            name: New name (required by the API — defaults to current name if
+                  not provided, fetched automatically).
+            description: New description.
+            tags: List of tag strings. Replaces all existing tags on the product.
+            extra: Optional dict merged into the request body for advanced
+                   fields (e.g. owners, ``tier``, ``status``).
+
+        Returns:
+            dict: The updated product.
+        """
+        if product_id is None:
+            if not product_name:
+                raise ValueError("Either product_name or product_id is required")
+            product_id = self._lookup_product_id(product_name)
+
+        # Fetch current state so we can carry forward required fields
+        resp = self._session.get(
+            f"{self.base_url}/user/product/{product_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        current = resp.json()
+
+        body = {
+            "id": product_id,
+            "name": name if name is not None else current.get("name"),
+        }
+        if description is not None:
+            body["description"] = description
+        if tags is not None:
+            body["tags"] = tags
+        if extra:
+            body.update(extra)
+
+        resp = self._session.put(
             f"{self.base_url}/user/product",
             json=body,
             timeout=self._timeout,
@@ -714,7 +768,7 @@ class ArmorCodeClient:
 
     def create_sub_product(self, name, product_name=None, *, product_id=None,
                            description=None, environment_id=None, tier=None,
-                           extra=None):
+                           tags=None, extra=None):
         """Create a new sub-product under an existing product.
 
         Args:
@@ -725,6 +779,7 @@ class ArmorCodeClient:
             description: Optional description.
             environment_id: Optional environment id.
             tier: Optional tier string (e.g. ``"Tier 1"``).
+            tags: Optional list of tag strings (e.g. ``["env:prod", "team:security"]``).
             extra: Optional dict merged into the request body for advanced
                    fields (e.g. owners, ``classType``, ``hostedCloud``).
 
@@ -747,9 +802,54 @@ class ArmorCodeClient:
             body["environment"] = {"id": environment_id}
         if tier is not None:
             body["tier"] = tier
+        if tags is not None:
+            body["tags"] = tags
         if extra:
             body.update(extra)
         resp = self._session.post(
+            f"{self.base_url}/api/sub-product",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_sub_product(self, sub_product_id, *, name=None, description=None,
+                           tags=None, extra=None):
+        """Update an existing sub-product.
+
+        Args:
+            sub_product_id: Sub-product id to update (required).
+            name: New name (if omitted, current name is preserved).
+            description: New description.
+            tags: List of tag strings. Replaces all existing tags on the sub-product.
+            extra: Optional dict merged into the request body for advanced
+                   fields (e.g. ``tier``, ``repoLink``, owners).
+
+        Returns:
+            dict: The updated sub-product.
+        """
+        # Fetch current state to carry forward required fields
+        resp = self._session.get(
+            f"{self.base_url}/api/sub-product/{sub_product_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        current = resp.json()
+
+        body = {
+            "id": sub_product_id,
+            "name": name if name is not None else current.get("name"),
+            "product": {"id": current["product"]["id"]},
+        }
+        if description is not None:
+            body["description"] = description
+        if tags is not None:
+            body["tags"] = tags
+        if extra:
+            body.update(extra)
+
+        resp = self._session.put(
             f"{self.base_url}/api/sub-product",
             json=body,
             timeout=self._timeout,

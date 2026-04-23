@@ -46,22 +46,43 @@ For AIEM-specific methods, see [aiem.md](aiem.md).
 | Method | Description |
 |--------|-------------|
 | `get_products(page, size, search)` | Paginated product/application listing |
-| `create_product(name, description, type_id, extra)` | Create a new product (returns the new id) |
+| `create_product(name, description, type_id, tags, extra)` | Create a new product with optional tags (returns the new id) |
+| `update_product(product_name, product_id, name, description, tags, extra)` | Update an existing product — resolves by name; tags replace existing set |
 | `get_sub_products()` | All sub-products (repos/components) — lightweight id + name |
 | `get_sub_product(sub_product_id)` | Full detail for a sub-product (parent product, owners, env) |
-| `create_sub_product(name, product_name, product_id, description, environment_id, tier, extra)` | Create a new sub-product under a parent product |
+| `create_sub_product(name, product_name, product_id, description, environment_id, tier, tags, extra)` | Create a new sub-product under a parent product with optional tags |
+| `update_sub_product(sub_product_id, name, description, tags, extra)` | Update an existing sub-product — tags replace existing set |
 
 ```python
-# Create a product, then a sub-product under it (by name — id is looked up)
-ac.create_product(name="payments-platform", description="Payments group")
+# Create a product with tags, then a sub-product under it
+ac.create_product(
+    name="payments-platform",
+    description="Payments group",
+    tags=["env:production", "team:payments", "superowner:owner@example.com"],
+)
 sub = ac.create_sub_product(
     name="payments-api",
     product_name="payments-platform",
     description="REST API service",
     tier="Tier 1",
+    tags=["env:production", "team:payments"],
 )
 print(sub["id"])
+
+# Update tags on an existing product (replaces all existing tags)
+ac.update_product(
+    product_name="payments-platform",
+    tags=["env:production", "team:payments", "superowner:newowner@example.com"],
+)
+
+# Update tags on an existing sub-product
+ac.update_sub_product(
+    sub["id"],
+    tags=["env:production", "team:appsec"],
+)
 ```
+
+> **Tags note:** `update_product` and `update_sub_product` perform a full tag replacement — pass the complete desired tag list, not just the tags you want to add. To add a single tag without losing others, fetch current tags first (`get_sub_product` / `get_products`) and merge them into the list before calling update.
 
 ## Users
 
