@@ -123,7 +123,7 @@ class ArmorCodeClient:
         days_back=None,
         extra_filters=None,
         dump_path=None,
-        page_size=500,
+        page_size=2000,
     ):
         """Fetch findings from ArmorCode with optional filters.
 
@@ -161,9 +161,12 @@ class ArmorCodeClient:
         if extra_filters:
             filters.update(extra_filters)
 
+        now_ms = int(time.time() * 1000)
+        effective_days = days_back if days_back is not None else 365
+        start_ms = now_ms - int(effective_days * 86400 * 1000)
+
         if days_back is not None:
-            cutoff_ms = str(int((time.time() - days_back * 86400) * 1000))
-            filters["foundOn"] = [cutoff_ms]
+            filters["foundOn"] = [str(start_ms)]
             filter_ops["foundOn"] = "GREATER_THAN"
 
         # Probe total count first
@@ -172,10 +175,8 @@ class ArmorCodeClient:
         if total <= self._MAX_RESULTS:
             all_findings = self._paginated_fetch(filters, filter_ops, page_size)
         else:
-            # Auto-chunk by date range
-            effective_days = days_back if days_back is not None else 365
             all_findings = self._chunked_fetch(
-                filters, filter_ops, effective_days, total, page_size,
+                filters, filter_ops, start_ms, now_ms, total, page_size,
             )
 
         self._findings = all_findings
@@ -235,41 +236,33 @@ class ArmorCodeClient:
 
         return all_findings
 
-    def _chunked_fetch(self, base_filters, base_filter_ops, days_back, total, page_size):
+    def _chunked_fetch(self, base_filters, base_filter_ops, start_ms, end_ms, total, page_size):
         """Split a large query into date-range chunks under 10K each.
 
-        Uses binary-style splitting: starts by dividing the date range into
-        even chunks sized to stay under 10K, then fetches each chunk.
+        Uses even splitting: divides [start_ms, end_ms] into enough slices to
+        keep each under 10K, then fetches each slice. Slices that are still
+        over 10K are split recursively using the same window boundaries.
         """
-        now_ms = int(time.time() * 1000)
-        start_ms = now_ms - (days_back * 86400 * 1000)
-
-        # Estimate chunks needed (with headroom)
         num_chunks = max(2, (total // (self._MAX_RESULTS // 2)) + 1)
-        chunk_duration = (now_ms - start_ms) // num_chunks
+        chunk_duration = (end_ms - start_ms) // num_chunks
 
         all_findings = []
         seen_ids = set()
 
         for i in range(num_chunks):
             chunk_start = start_ms + (i * chunk_duration)
-            # Overlap by 1ms to avoid boundary gaps
-            chunk_end = start_ms + ((i + 1) * chunk_duration) + 1 if i < num_chunks - 1 else now_ms
+            chunk_end = start_ms + ((i + 1) * chunk_duration) if i < num_chunks - 1 else end_ms
 
-            # Build clean filter copies, replacing any existing foundOn
             chunk_filters = {k: v for k, v in base_filters.items() if k != "foundOn"}
             chunk_ops = {k: v for k, v in base_filter_ops.items() if k != "foundOn"}
             chunk_filters["foundOn"] = [str(chunk_start), str(chunk_end)]
             chunk_ops["foundOn"] = "BETWEEN"
 
-            # Check chunk size first
             chunk_total = self._probe_count(chunk_filters, chunk_ops)
 
             if chunk_total > self._MAX_RESULTS:
-                # Recursively split this chunk further
-                chunk_days = (chunk_end - chunk_start) / (86400 * 1000)
                 sub_findings = self._chunked_fetch(
-                    chunk_filters, chunk_ops, chunk_days, chunk_total, page_size,
+                    chunk_filters, chunk_ops, chunk_start, chunk_end, chunk_total, page_size,
                 )
                 for f in sub_findings:
                     fid = f.get("id")
@@ -418,6 +411,86 @@ class ArmorCodeClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    def analyze_risk_scoring_tags(
+        self,
+        finding_age,
+        severities,
+        *,
+        statuses=None,
+        findings=None,
+    ):
+        """Count findings carrying each tag that contributes to the risk score.
+
+        The tenant's risk-scoring config (``ASSET_SCORE`` tenant-config) lists
+        ``(tag_key, tag_value, weight)`` triples. This method returns one row
+        per configured triple, with the number of findings — within the given
+        age window and severities — that carry the corresponding
+        ``"key:value"`` tag.
+
+        Args:
+            finding_age: Age window in days (``foundOn > now - N days``).
+            severities: List of severities (title-case, e.g. ``["Critical", "High"]``)
+                        or a single comma-separated string (``"critical,high"``).
+            statuses: Optional list of statuses; defaults to ``["OPEN"]``.
+            findings: Optional pre-fetched findings list. If provided, skips
+                      the API pull and just counts against the supplied data.
+
+        Returns:
+            list[dict]: Sorted by count descending. Each row::
+
+                {"tag_key": str, "tag_value": str, "weight": float, "count": int}
+
+            Plus a final summary row::
+
+                {"tag_key": "(none — finding had no scoring tag)",
+                 "tag_value": "", "weight": 0, "count": int}
+        """
+        if isinstance(severities, str):
+            severities = [s.strip() for s in severities.split(",") if s.strip()]
+        severities = [s[:1].upper() + s[1:].lower() for s in severities]
+
+        if statuses is None:
+            statuses = ["OPEN"]
+
+        config = self.get_tenant_config("ASSET_SCORE") or []
+        triples = [
+            (entry.get("name"), str(entry.get("fieldValue")), entry.get("value", 0))
+            for entry in config
+            if entry.get("name") and entry.get("fieldValue") is not None
+        ]
+
+        if findings is None:
+            findings = self.get_findings(
+                severities=severities,
+                statuses=statuses,
+                days_back=finding_age,
+            )
+
+        counts = {(k, v): 0 for (k, v, _w) in triples}
+        no_tag_count = 0
+        for f in findings:
+            tag_set = set(f.get("tags") or [])
+            matched = False
+            for (k, v, _w) in triples:
+                if f"{k}:{v}" in tag_set:
+                    counts[(k, v)] += 1
+                    matched = True
+            if not matched:
+                no_tag_count += 1
+
+        rows = [
+            {"tag_key": k, "tag_value": v, "weight": w, "count": counts[(k, v)]}
+            for (k, v, w) in triples
+        ]
+        rows.sort(key=lambda r: r["count"], reverse=True)
+        rows.append({
+            "tag_key": "(none — finding had no scoring tag)",
+            "tag_value": "",
+            "weight": 0,
+            "count": no_tag_count,
+        })
+        return rows
 
     # ------------------------------------------------------------------
     # CSV Export

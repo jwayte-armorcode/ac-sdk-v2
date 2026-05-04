@@ -63,6 +63,7 @@ ac = ArmorCodeClient("https://app.armorcode.com", token="<bearer-token>")
 | `get_finding_stats(filters)` | Severity-by-status summary |
 | `get_finding_stats_by_team(team_name, environments)` | Stats for a specific team |
 | `get_finding_stats_by_product(product_name, environments)` | Stats for a specific product |
+| `analyze_risk_scoring_tags(finding_age, severities, statuses=None, findings=None)` | For each tag in the tenant's `ASSET_SCORE` config, count matching findings in the age window. Returns rows of `{tag_key, tag_value, weight, count}` plus a final `(none — finding had no scoring tag)` summary row |
 
 **Filter casing rules (CRITICAL):**
 - Severity in filters: title-case — `Critical`, `High`, `Medium`, `Low`, `Info`
