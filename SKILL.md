@@ -59,6 +59,7 @@ ac = ArmorCodeClient("https://app.armorcode.com", token="<bearer-token>")
 | `get_finding_stats_by_team(team_name, environments)` | Stats for a specific team |
 | `get_finding_stats_by_product(product_name, environments)` | Stats for a specific product |
 | `analyze_risk_scoring_tags(finding_age, severities, statuses=None, findings=None)` | For each tag in the tenant's `ASSET_SCORE` config, count matching findings in the age window. Returns rows of `{tag_key, tag_value, weight, count}` plus a final `(none — finding had no scoring tag)` summary row |
+| `upload_findings(findings, product, sub_product, environment)` | **Write** — insert custom findings via `POST /api/findings/upload` (Generic JSON). Returns `{scanId}` |
 
 **Filter casing rules (CRITICAL):**
 - Severity in filters: title-case — `Critical`, `High`, `Medium`, `Low`, `Info`
@@ -77,6 +78,36 @@ findings = ac.get_findings(
 for repo, count in ac.list_repos():
     print(f"{repo}: {count}")
 ```
+
+### Inserting findings (`upload_findings`)
+
+`POST /api/findings/upload` accepts a JSON **array** of findings in ArmorCode's
+Generic JSON format. `product`, `sub_product`, and `environment` are query params;
+names are resolved to ids automatically.
+
+```python
+ac.upload_findings(
+    {
+        "Title": "Hardcoded secret in config",
+        "Severity": "High",          # Critical / High / Medium / Low / Info
+        "Description": "...",
+        "ToolFindingId": "my-unique-id-001",   # dedup key
+        "Category": "SECURITY",
+        "FindingUrl": "https://example.com/finding/001",
+    },
+    product="my-product",
+    sub_product="my-subproduct",
+    environment="Production",
+)
+# -> {"scanId": 137746107}   # ingest is async; the scanId confirms acceptance
+```
+
+Ruby: `ac.upload_findings(finding, product: "my-product", sub_product: "my-subproduct", environment: "Production")`.
+
+**The sub-product must belong to the product** — otherwise the API returns
+`500 "No such product/sub-product/environment found"`. The returned `scanId`
+means the upload was accepted; findings surface asynchronously via the scan
+pipeline, so they may not appear in `get_findings()` immediately.
 
 ---
 
@@ -103,9 +134,11 @@ for repo, count in ac.list_repos():
 |--------|-------------|
 | `get_products(page, size, search)` | Paginated product listing |
 | `create_product(name, description, type_id, extra)` | Create a new product |
+| `create_product(...)` / `update_product(...)` | Create / update a product (tags, description) |
 | `get_sub_products()` | All sub-products — lightweight id + name |
 | `get_sub_product(sub_product_id)` | Full detail |
 | `create_sub_product(name, product_name, product_id, description, environment_id, tier, extra)` | Create sub-product under parent |
+| `update_sub_product(...)`, `update_*_add_tags(...)`, `update_*_set_tag(...)` | Update sub-product / add or set `key:value` tags on products & sub-products |
 
 ### SLA
 | Method | Description |
@@ -119,10 +152,13 @@ for repo, count in ac.list_repos():
 | Method | Description |
 |--------|-------------|
 | `get_users()` | All tenant users |
+| `get_assets(source, limit, filters)` | Paginated asset listing |
+| `get_tickets(product, sub_product, assignee, page, size)` | Tickets (names resolved to ids) |
 | `get_tools()` | Configured security scanners |
 | `get_integration_tools()` | Integrations (Jira, GitHub, etc.) |
-| `get_runbooks()` | All automation runbooks |
-| `get_tenant_config(config_type)` | Feature flags / config values |
+| `get_feature_flags()` | Tenant feature flags |
+| `get_runbooks()` / `get_runbook(id)` / `export_runbooks(name, output_dir)` | Automation runbooks (list / detail / export to JSON) |
+| `get_tenant_config(config_type)` | Config values (e.g. `ASSET_SCORE`) |
 | `get_api_docs()` | Full OpenAPI spec |
 
 ---
