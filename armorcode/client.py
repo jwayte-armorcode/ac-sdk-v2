@@ -1104,6 +1104,54 @@ class ArmorCodeClient:
         return resp.json()
 
     # ------------------------------------------------------------------
+    # Assets  (POST /api/v2/assets, max page size 100)
+    # ------------------------------------------------------------------
+
+    def get_assets(self, source=None, limit=None, filters=None):
+        """Fetch assets from the v2 assets API.
+
+        Args:
+            source: Optional source name string to filter by (e.g. "CrowdStrike Falcon").
+            limit: Max number of assets to return. None means fetch all.
+            filters: Optional dict of extra filters to merge into the request body.
+
+        Returns:
+            list[dict]: Asset records. Key fields include ``name``, ``ipv4``,
+            ``hostname``, ``hostnameNormalized``, ``dnsName``, ``source`` (list),
+            ``mergedAssetsCount``, ``correlated``, ``assetIdFromTool``, ``id``.
+
+        Notes:
+            - API max page size is 100.
+            - ``source`` and ``hostname`` fields are lists in the response.
+            - Tenable assets often have no hostname — only IPs.
+        """
+        MAX_PAGE = 100
+        req_filters = dict(filters or {})
+        if source:
+            req_filters["source"] = [source]
+
+        assets = []
+        page = 0
+        while True:
+            size = min(MAX_PAGE, (limit - len(assets)) if limit else MAX_PAGE)
+            resp = self._session.post(
+                f"{self.base_url}/api/v2/assets",
+                json={"filters": req_filters, "page": page, "size": size},
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            batch = data.get("content", [])
+            if not batch:
+                break
+            assets.extend(batch)
+            total = data.get("totalElements", 0)
+            if len(assets) >= total or (limit and len(assets) >= limit):
+                break
+            page += 1
+        return assets
+
+    # ------------------------------------------------------------------
     # Security Tools
     # ------------------------------------------------------------------
 
@@ -1133,12 +1181,25 @@ class ArmorCodeClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_feature_flags(self):
+        """Return the feature flags enabled for this tenant.
+
+        Returns:
+            dict: Feature flag map keyed by flag name with boolean/value state.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/feature-flags",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     # ------------------------------------------------------------------
     # Runbooks
     # ------------------------------------------------------------------
 
     def get_runbooks(self):
-        """List all runbook automations.
+        """List all runbook automations (summary, no task detail).
 
         Returns:
             list[dict]: Runbooks with id, label, type, enabled, status,
@@ -1150,6 +1211,68 @@ class ArmorCodeClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    def get_runbook(self, runbook_id):
+        """Get full detail for a single runbook including tasks and filters.
+
+        Args:
+            runbook_id: Runbook ID (int or str).
+
+        Returns:
+            dict: Full runbook detail with tasks, filters, config, schedule.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/runbook/{runbook_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def export_runbooks(self, name=None, output_dir="runbooks"):
+        """Export all runbooks (or one by name) to JSON files.
+
+        Fetches the summary list, then fetches full detail for each runbook
+        and writes one <id>_<label>.json file per runbook into output_dir.
+        Also writes an all_runbooks.json manifest.
+
+        Args:
+            name: Optional runbook label substring to filter (case-insensitive).
+                  If None, exports all runbooks.
+            output_dir: Directory path to write JSON files into.
+
+        Returns:
+            list[dict]: Full runbook detail objects that were exported.
+        """
+        import os, json, re, time
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        summaries = self.get_runbooks()
+        if name:
+            summaries = [r for r in summaries if name.lower() in r.get("label", "").lower()]
+
+        exported = []
+        for summary in summaries:
+            rid = summary["id"]
+            try:
+                detail = self.get_runbook(rid)
+            except Exception:
+                detail = summary  # fallback to summary if detail fails
+
+            exported.append(detail)
+
+            safe_label = re.sub(r"[^\w\-]", "_", detail.get("label", str(rid)))[:60]
+            fname = os.path.join(output_dir, f"{rid}_{safe_label}.json")
+            with open(fname, "w") as f:
+                json.dump(detail, f, indent=2, default=str)
+
+            time.sleep(0.15)  # avoid rate-limiting
+
+        manifest = os.path.join(output_dir, "all_runbooks.json")
+        with open(manifest, "w") as f:
+            json.dump(exported, f, indent=2, default=str)
+
+        return exported
 
     # ------------------------------------------------------------------
     # SLA
