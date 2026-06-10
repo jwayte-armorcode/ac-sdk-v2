@@ -594,6 +594,49 @@ class ArmorCodeClient:
         return rows
 
     # ------------------------------------------------------------------
+    # Custom Finding Upload (Generic JSON)
+    # ------------------------------------------------------------------
+
+    def upload_findings(self, findings, product, sub_product, environment):
+        """Insert one or more custom findings via the Generic JSON upload endpoint.
+
+        Hits ``POST /api/findings/upload`` with the target product, sub-product,
+        and environment as query params and a JSON array of finding objects as
+        the body. Each finding follows ArmorCode's Generic Finding JSON format,
+        e.g. ``{"Title": "...", "Severity": "High", "Description": "..."}``.
+
+        Args:
+            findings: A single finding dict or a list of finding dicts.
+            product: Product name (resolved to id) or product id (int).
+            sub_product: Sub-product name (resolved to id) or sub-product id (int).
+            environment: Environment name string, e.g. ``"Production"``.
+
+        Returns:
+            dict: The parsed API response (or ``{"status": <code>}`` if empty).
+        """
+        product_id = product if isinstance(product, int) else self._lookup_product_id(product)
+        sub_product_id = (
+            sub_product if isinstance(sub_product, int)
+            else self._lookup_sub_product_id(sub_product)
+        )
+
+        payload = findings if isinstance(findings, list) else [findings]
+
+        resp = self._session.post(
+            f"{self.base_url}/api/findings/upload",
+            params={"product": product_id, "subproduct": sub_product_id, "env": environment},
+            json=payload,
+            timeout=self._timeout * 3,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return {"status": resp.status_code}
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    # ------------------------------------------------------------------
     # CSV Export
     # ------------------------------------------------------------------
 

@@ -176,6 +176,36 @@ module Armorcode
     end
 
     # ---------------------------------------------------------------
+    # Custom Finding Upload (Generic JSON)
+    # ---------------------------------------------------------------
+
+    # Insert one or more custom findings into a product / sub-product / environment
+    # via the Generic JSON upload endpoint (POST /api/findings/upload).
+    #
+    #   findings    - a single finding Hash or an Array of finding Hashes. Each
+    #                 follows ArmorCode's Generic Finding JSON format, e.g.:
+    #                   { "Title" => "...", "Severity" => "High",
+    #                     "Description" => "...", "ToolFindingId" => "..." }
+    #   product     - product name (resolved to id) or product id (Integer)
+    #   sub_product - sub-product name (resolved to id) or sub-product id (Integer)
+    #   environment - environment name string (e.g. "Production")
+    #
+    # Returns the parsed API response.
+    def upload_findings(findings, product:, sub_product:, environment:)
+      product_id     = product.is_a?(Integer)     ? product     : lookup_product_id(product)
+      sub_product_id = sub_product.is_a?(Integer) ? sub_product : lookup_sub_product_id(sub_product)
+
+      payload = findings.is_a?(Array) ? findings : [findings]
+
+      resp = @conn.post("/api/findings/upload") do |req|
+        req.params = { product: product_id, subproduct: sub_product_id, env: environment }
+        req.body   = payload.to_json
+      end
+      body = resp.body.to_s
+      body.empty? ? { "status" => resp.status } : (JSON.parse(body) rescue { "raw" => body })
+    end
+
+    # ---------------------------------------------------------------
     # CSV Export
     # ---------------------------------------------------------------
 
@@ -603,6 +633,17 @@ module Armorcode
       if matches.length > 1
         ids = matches.map { |m| m["id"] }
         raise "Multiple products named #{product_name.inspect}: #{ids}. Pass product_id explicitly."
+      end
+      matches.first["id"].to_i
+    end
+
+    def lookup_sub_product_id(sub_product_name)
+      sps     = get_sub_products
+      matches = sps.select { |sp| sp["name"] == sub_product_name }
+      raise "No sub-product found with name #{sub_product_name.inspect}" if matches.empty?
+      if matches.length > 1
+        ids = matches.map { |m| m["id"] }
+        raise "Multiple sub-products named #{sub_product_name.inspect}: #{ids}. Pass the id explicitly."
       end
       matches.first["id"].to_i
     end
