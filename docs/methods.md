@@ -1,6 +1,6 @@
 # SDK Methods
 
-All methods are on the `ArmorCodeClient` class. For filter values and finding-specific behaviour see [findings.md](findings.md). For AIEM methods see [aiem.md](aiem.md).
+All methods are on the `ArmorCodeClient` class. For filter values and finding-specific behaviour see [findings.md](findings.md).
 
 ## Findings
 
@@ -12,6 +12,30 @@ All methods are on the `ArmorCodeClient` class. For filter values and finding-sp
 | `get_findings_by_repo(repo_name, findings)` | Filter cached findings to one repo |
 | `dump_json(path)` | Write cached findings to JSON |
 | `export_findings_csv(output_path, filters, filter_operations)` | Bulk export to CSV |
+| `upload_findings(findings, product, sub_product, environment)` | Insert custom findings via `POST /api/findings/upload` (Generic JSON). `product`/`sub_product` accept names (resolved to IDs). Returns `{"scanId": ...}` |
+
+```python
+# Insert a custom finding (single dict or a list of dicts)
+ac.upload_findings(
+    {
+        "Title": "Hardcoded secret in config",
+        "Severity": "High",                  # Critical / High / Medium / Low / Info
+        "Description": "...",
+        "ToolFindingId": "my-unique-id-001",  # dedup key
+        "Category": "SECURITY",
+        "FindingUrl": "https://example.com/finding/001",
+    },
+    product="my-product",
+    sub_product="my-sub-product",
+    environment="Production",
+)
+# -> {"scanId": 137746107}   # ingest is async; scanId confirms acceptance
+```
+
+> The sub-product must belong to the product passed, or the API returns
+> `500 "No such product/sub-product/environment found"`. Findings surface
+> asynchronously via the scan pipeline, so they may not appear in
+> `get_findings()` immediately.
 
 ## Finding Statistics
 
