@@ -4,13 +4,15 @@
 
 | Filter | Format | Example values |
 |--------|--------|----------------|
-| `severities` | title-case list | `["Critical", "High", "Medium", "Low", "Info"]` |
+| `severities` | uppercase list | `["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]` |
 | `statuses` | uppercase list | `["OPEN", "CONFIRMED", "FALSEPOSITIVE", "ACCEPTRISK", "MITIGATED", "SUPPRESSED", "TRIAGE", "IN_PROGRESS", "CONTROLLED"]` |
 | `days_back` | integer | `14` — SDK converts to epoch-ms internally |
 | `tags` | full `key:value` strings | `["superowner:user@example.com", "env:prod"]` — key-only returns 0 results |
 | `extra_filters` | dict of field → list | `{"source": ["Tenable.sc"], "scanType": ["SAST"]}` |
 
 > **Tags:** always pass the full `key:value` string. Passing just a key (e.g. `"superowner"`) silently returns 0 results — this is an API behaviour, not an SDK bug.
+
+> **Filter key gotchas:** the ArmorCode API uses plural forms (`severities`, `statuses`) when combined with other filters. Singular forms (`severity`, `status`) silently return 0 results. The SDK always sends the correct plural keys internally.
 
 ## Basic Usage
 
@@ -65,6 +67,57 @@ findings = ac.get_findings(
 ## Page Size
 
 The `size` param controls results per API page (default: 2000, max: 10000). Larger pages reduce API calls but increase per-request latency. 2000–3000 is the practical sweet spot.
+
+## Hierarchy Filter
+
+`get_findings_by_hierarchy()` lets you scope a findings query to any combination of product (group), sub-product, and team — using **names**, not IDs. The SDK resolves each name to its numeric ID in a pre-step before querying.
+
+```python
+# Any combination of the three hierarchy levels is valid
+findings = ac.get_findings_by_hierarchy(
+    product="Risk Platform",
+    sub_product="airml-dx-suggestions-service",
+    team="team-Risk Platform",
+    severities=["CRITICAL", "HIGH"],
+    statuses=["OPEN"],
+    sources=["Semgrep"],
+)
+
+# Product only
+findings = ac.get_findings_by_hierarchy(
+    product="Foundations",
+    statuses=["OPEN"],
+)
+
+# Sub-product only
+findings = ac.get_findings_by_hierarchy(
+    sub_product="airml-dx-suggestions-service",
+)
+```
+
+All three hierarchy filters are ANDed together with any `severities`, `statuses`, and `sources` you supply. Additional filters can be passed via `extra_filters`.
+
+A `ValueError` is raised if any name can't be resolved to a unique ID:
+
+```python
+# Raises: ValueError: No product found with name 'DoesNotExist'
+ac.get_findings_by_hierarchy(product="DoesNotExist")
+
+# Raises: ValueError: Multiple sub-products named 'shared-lib' found: [123, 456].
+# Pass sub_product_id via extra_filters to disambiguate.
+ac.get_findings_by_hierarchy(sub_product="shared-lib")
+```
+
+To bypass name resolution and pass IDs directly, use `extra_filters`:
+
+```python
+findings = ac.get_findings_by_hierarchy(
+    extra_filters={"product": [416643], "subProduct": [530718]},
+    statuses=["OPEN"],
+)
+```
+
+> **Note:** `product` and `subProduct` filters require numeric IDs as arrays. `productId` / `subProductId` are silently ignored by the API.
 
 ## Example — Vulnerabilities by Repo
 
