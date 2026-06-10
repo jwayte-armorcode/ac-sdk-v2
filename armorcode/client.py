@@ -155,9 +155,9 @@ class ArmorCodeClient:
         filter_ops = {}
 
         if severities:
-            filters["severity"] = list(severities)
+            filters["severities"] = list(severities)
         if statuses:
-            filters["status"] = list(statuses)
+            filters["statuses"] = list(statuses)
         if extra_filters:
             filters.update(extra_filters)
 
@@ -278,6 +278,107 @@ class ArmorCodeClient:
                         all_findings.append(f)
 
         return all_findings
+
+    def get_findings_by_hierarchy(
+        self,
+        product=None,
+        sub_product=None,
+        team=None,
+        severities=None,
+        statuses=None,
+        sources=None,
+        extra_filters=None,
+        page_size=500,
+    ):
+        """Fetch findings scoped to a product/sub-product/team hierarchy.
+
+        Accepts names — looks up numeric IDs automatically before querying.
+        Any combination of the three hierarchy levels can be supplied; all
+        provided levels are ANDed together.
+
+        Args:
+            product: Product (group) name, e.g. ``"Risk Platform"``.
+            sub_product: Sub-product name, e.g. ``"airml-dx-suggestions-service"``.
+            team: Team name, e.g. ``"team-Risk Platform"``.
+            severities: List of severities, e.g. ``["CRITICAL", "HIGH"]``.
+            statuses: List of statuses, e.g. ``["OPEN"]``.
+            sources: List of tool sources, e.g. ``["GitHub", "Snyk"]``.
+            extra_filters: Additional filters merged into the request body.
+            page_size: Findings per page (max 500).
+
+        Returns:
+            list[dict]: All matching findings.
+
+        Raises:
+            ValueError: If a name cannot be resolved to a unique ID.
+
+        Example::
+
+            findings = client.get_findings_by_hierarchy(
+                product="Risk Platform",
+                sub_product="airml-dx-suggestions-service",
+                team="team-Risk Platform",
+                severities=["CRITICAL", "HIGH"],
+                statuses=["OPEN"],
+                sources=["GitHub"],
+            )
+        """
+        filters = {}
+
+        if product is not None:
+            filters["product"] = [self._lookup_product_id(product)]
+        if sub_product is not None:
+            filters["subProduct"] = [self._lookup_sub_product_id(sub_product)]
+        if team is not None:
+            filters["team"] = [self._lookup_team_id(team)]
+        if severities:
+            filters["severities"] = list(severities)
+        if statuses:
+            filters["statuses"] = list(statuses)
+        if sources:
+            filters["source"] = list(sources)
+        if extra_filters:
+            filters.update(extra_filters)
+
+        return self._paginated_fetch(filters, {}, page_size)
+
+    def _lookup_sub_product_id(self, sub_product_name):
+        """Resolve a sub-product name to its id via exact-match lookup."""
+        resp = self._session.get(
+            f"{self.base_url}/user/sub-product/elastic/short",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        items = resp.json()
+        matches = [s for s in items if s.get("name") == sub_product_name]
+        if not matches:
+            raise ValueError(f"No sub-product found with name {sub_product_name!r}")
+        if len(matches) > 1:
+            ids = [m.get("id") for m in matches]
+            raise ValueError(
+                f"Multiple sub-products named {sub_product_name!r} found: {ids}. "
+                f"Pass sub_product_id via extra_filters to disambiguate."
+            )
+        return int(matches[0]["id"])
+
+    def _lookup_team_id(self, team_name):
+        """Resolve a team name to its id via exact-match lookup."""
+        resp = self._session.get(
+            f"{self.base_url}/api/team/all-teams",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        teams = resp.json()
+        matches = [t for t in teams if t.get("name") == team_name]
+        if not matches:
+            raise ValueError(f"No team found with name {team_name!r}")
+        if len(matches) > 1:
+            ids = [m.get("id") for m in matches]
+            raise ValueError(
+                f"Multiple teams named {team_name!r} found: {ids}. "
+                f"Pass team_id via extra_filters to disambiguate."
+            )
+        return int(matches[0]["id"])
 
     # ------------------------------------------------------------------
     # list_repos — repo breakdown from cached findings

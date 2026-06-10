@@ -7,6 +7,7 @@ All methods are on the `ArmorCodeClient` class. For filter values and finding-sp
 | Method | Description |
 |--------|-------------|
 | `get_findings(severities, statuses, days_back, extra_filters, dump_path, size)` | Bulk pull with filters; caches locally; auto-chunks if >10K — see [findings.md](findings.md) |
+| `get_findings_by_hierarchy(product, sub_product, team, severities, statuses, sources, extra_filters, page_size)` | Fetch findings scoped to a product/sub-product/team hierarchy — names resolved to IDs automatically — see [findings.md](findings.md#hierarchy-filter) |
 | `list_repos(findings)` | Repo names + finding counts from cached data |
 | `get_findings_by_repo(repo_name, findings)` | Filter cached findings to one repo |
 | `dump_json(path)` | Write cached findings to JSON |
