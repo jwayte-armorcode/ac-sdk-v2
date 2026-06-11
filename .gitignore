@@ -1,4 +1,5 @@
 env
+github_creds
 *.json
 *.xlsx
 __pycache__/
