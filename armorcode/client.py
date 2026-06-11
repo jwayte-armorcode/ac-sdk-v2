@@ -440,10 +440,14 @@ class ArmorCodeClient:
 
         filters = {"armorcodeProjects": [engagement_id]}
 
+        # Alongside the armorcodeProjects filter the API honours the SINGULAR
+        # keys (status, severity) — the plural forms used elsewhere are
+        # silently ignored here. Status values must be UPPERCASE; severity
+        # values Title-case. Normalise so callers can pass either casing.
         if severities:
-            filters["severities"] = list(severities)
+            filters["severity"] = [s.title() for s in severities]
         if statuses:
-            filters["statuses"] = list(statuses)
+            filters["status"] = [s.upper() for s in statuses]
         if sources:
             filters["source"] = list(sources)
         if extra_filters:

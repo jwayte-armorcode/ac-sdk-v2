@@ -148,6 +148,8 @@ A `ValueError` is raised if a name can't be resolved to a unique engagement.
 
 > **Note:** the filter key is `armorcodeProjects` (plural). `armorcodeProject`, `engagement`, and `project` are silently ignored by the API.
 
+> **Status/severity key quirk:** alongside `armorcodeProjects` the API honours the **singular** `status` / `severity` keys — the plural `statuses` / `severities` (used with the hierarchy filters) are silently ignored here. Status values must be UPPERCASE, severity values Title-case. The SDK sends the singular keys and normalises casing, so `statuses=["open"]` and `severities=["MEDIUM"]` both work. Findings with a resolved status (e.g. `FALSEPOSITIVE`) stay tagged to the engagement, so an unfiltered call returns them — pass `statuses` to match the UI's active-only view.
+
 ## Example — Vulnerabilities by Repo
 
 See `examples/vuln_by_repo.py` for a complete workflow: pull findings → list repos → export to Excel.
