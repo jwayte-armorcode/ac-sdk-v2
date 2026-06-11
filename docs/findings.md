@@ -119,6 +119,35 @@ findings = ac.get_findings_by_hierarchy(
 
 > **Note:** `product` and `subProduct` filters require numeric IDs as arrays. `productId` / `subProductId` are silently ignored by the API.
 
+## Engagement Filter
+
+`get_findings_by_engagement()` pulls all findings tied to an **engagement** (the API's internal name is "project"). Pass the engagement name (resolved to its id automatically) or an integer id.
+
+```python
+# By name
+findings = ac.get_findings_by_engagement("engage1", statuses=["OPEN"])
+
+# By id (skips the name lookup)
+findings = ac.get_findings_by_engagement(34464)
+
+# Stack severity / source filters
+findings = ac.get_findings_by_engagement(
+    "engage1",
+    severities=["CRITICAL", "HIGH"],
+    sources=["Trivy", "Dependabot"],
+)
+
+# List engagements first
+for e in ac.get_engagements():
+    print(e["id"], e["name"])
+```
+
+A `ValueError` is raised if a name can't be resolved to a unique engagement.
+
+> **Engagement vs assessment:** these are two **independent** finding associations, not a parent/child hierarchy. Engagements filter on `armorcodeProjects`; pentests/assessments filter on `assessments`. A finding can carry one, both, or neither. There is no engagement→assessment foreign key in the API — the assessment's `scope` (product/sub-product) is what ties it to assets.
+
+> **Note:** the filter key is `armorcodeProjects` (plural). `armorcodeProject`, `engagement`, and `project` are silently ignored by the API.
+
 ## Example — Vulnerabilities by Repo
 
 See `examples/vuln_by_repo.py` for a complete workflow: pull findings → list repos → export to Excel.

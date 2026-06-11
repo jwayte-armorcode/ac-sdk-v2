@@ -380,6 +380,91 @@ class ArmorCodeClient:
             )
         return int(matches[0]["id"])
 
+    def get_engagements(self):
+        """List all engagements (a.k.a. "projects" in the API).
+
+        Engagements are the top-level pentest/assessment containers. The API's
+        internal name for them is "project" (endpoint ``/user/project``).
+
+        Returns:
+            list[dict]: Engagements with ``id``, ``name``, and detail fields.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/project",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else data.get("content", [])
+
+    def get_findings_by_engagement(
+        self,
+        engagement,
+        severities=None,
+        statuses=None,
+        sources=None,
+        extra_filters=None,
+        page_size=500,
+    ):
+        """Fetch findings associated with an engagement.
+
+        Accepts an engagement name (resolved to its id automatically) or an
+        integer id. Findings are filtered server-side on the
+        ``armorcodeProjects`` filter key.
+
+        Args:
+            engagement: Engagement name (e.g. ``"engage1"``) or integer id.
+            severities: List of severities, e.g. ``["CRITICAL", "HIGH"]``.
+            statuses: List of statuses, e.g. ``["OPEN"]``.
+            sources: List of tool sources, e.g. ``["Trivy", "Dependabot"]``.
+            extra_filters: Additional filters merged into the request body.
+            page_size: Findings per page (max 500).
+
+        Returns:
+            list[dict]: All matching findings.
+
+        Raises:
+            ValueError: If an engagement name cannot be resolved to a unique id.
+
+        Example::
+
+            findings = client.get_findings_by_engagement(
+                "engage1",
+                statuses=["OPEN"],
+            )
+        """
+        if isinstance(engagement, int):
+            engagement_id = engagement
+        else:
+            engagement_id = self._lookup_engagement_id(engagement)
+
+        filters = {"armorcodeProjects": [engagement_id]}
+
+        if severities:
+            filters["severities"] = list(severities)
+        if statuses:
+            filters["statuses"] = list(statuses)
+        if sources:
+            filters["source"] = list(sources)
+        if extra_filters:
+            filters.update(extra_filters)
+
+        return self._paginated_fetch(filters, {}, page_size)
+
+    def _lookup_engagement_id(self, engagement_name):
+        """Resolve an engagement name to its id via exact-match lookup."""
+        engagements = self.get_engagements()
+        matches = [e for e in engagements if e.get("name") == engagement_name]
+        if not matches:
+            raise ValueError(f"No engagement found with name {engagement_name!r}")
+        if len(matches) > 1:
+            ids = [m.get("id") for m in matches]
+            raise ValueError(
+                f"Multiple engagements named {engagement_name!r} found: {ids}. "
+                f"Pass the engagement id instead to disambiguate."
+            )
+        return int(matches[0]["id"])
+
     # ------------------------------------------------------------------
     # list_repos — repo breakdown from cached findings
     # ------------------------------------------------------------------
