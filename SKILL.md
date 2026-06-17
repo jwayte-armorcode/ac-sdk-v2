@@ -14,6 +14,8 @@ Comprehensive knowledge of the ArmorCode Python SDK (ac-sdk-v2).
 
 GitHub: `https://github.com/jwayte-armorcode/ac-sdk-v2`
 
+**API reference:** The full OpenAPI spec for `app.armorcode.com` is stored at `docs/openapi.json` in the repo. Use it to look up endpoint paths, request body schemas, and available parameters. Fetch a fresh copy at any time with `ac.get_api_docs()`.
+
 ---
 
 ## Setup
@@ -158,8 +160,27 @@ pipeline, so they may not appear in `get_findings()` immediately.
 | `get_integration_tools()` | Integrations (Jira, GitHub, etc.) |
 | `get_feature_flags()` | Tenant feature flags |
 | `get_runbooks()` / `get_runbook(id)` / `export_runbooks(name, output_dir)` | Automation runbooks (list / detail / export to JSON) |
+| `create_runbook(body)` / `update_runbook(id, body)` / `delete_runbook(id)` | Create / update / delete a runbook |
+| `enable_runbook(id)` / `disable_runbook(id)` / `run_runbook(id)` | Enable, disable, or trigger an immediate run |
+| `get_finding(finding_id)` | Full detail for a single finding by ID |
+| `bulk_accept_risk(ids, reason, notes)` / `bulk_false_positive(ids, reason, notes)` | Bulk status changes |
+| `bulk_suppress(ids, reason, notes)` / `bulk_reopen(ids)` / `bulk_confirm(ids)` | Bulk status changes (cont.) |
+| `bulk_change_severity(ids, severity)` / `bulk_assign_owner(ids, owner_id)` | Bulk severity / owner updates |
+| `update_finding_tags(ids, tags, update_type)` | Add / remove / replace tags on findings (`update_type`: `"ADD"`, `"REMOVE"`, `"REPLACE"`) |
+| `get_finding_comments(finding_id, page, size)` | Paginated comments on a finding |
+| `add_finding_comment(finding_id, text)` / `bulk_add_finding_comment(ids, text)` | Post comment(s) |
+| `get_exceptions()` / `get_exception(id)` | List / get risk register exceptions |
+| `create_exception(name, ...)` / `update_exception(id, ...)` / `delete_exception(id)` | Exception CRUD |
+| `get_scans(page, size, filters)` / `get_scan(scan_id)` | Scan listing and detail |
+| `get_alerts(severity, status, product, sub_product, ...)` | Search alerts |
+| `get_engagement(id)` / `create_engagement(name, description, ...)` | Engagement detail / create |
+| `update_engagement(id, ...)` / `delete_engagement(id)` | Update / delete engagement |
+| `get_assessments(page, size)` / `get_assessment(id)` | Assessment listing and detail |
+| `create_assessment(name, type, start_date, end_date, status, scope, assessors, ...)` / `delete_assessment(id)` | Assessment CRUD |
+| `create_team(name, ...)` / `update_team(id, ...)` / `delete_team(id)` / `add_team_members(id, members)` | Team CRUD |
+| `search_users(search_text, email, role, team, ...)` / `create_user(name, email, role, ...)` / `update_user(id, ...)` | User search and CRUD |
 | `get_tenant_config(config_type)` | Config values (e.g. `ASSET_SCORE`) |
-| `get_api_docs()` | Full OpenAPI spec |
+| `get_api_docs()` | Fetch live OpenAPI spec (also stored in `docs/openapi.json`) |
 
 ---
 
