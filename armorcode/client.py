@@ -1461,6 +1461,127 @@ class ArmorCodeClient:
         resp.raise_for_status()
         return resp.json()
 
+    def create_runbook(self, body):
+        """Create a new runbook automation.
+
+        Args:
+            body: Full runbook definition dict (CreateRunbookRequest schema).
+                  At minimum, include ``label``, ``type``, ``tasks``, and
+                  ``filters``.
+
+        Returns:
+            dict: The created runbook with its server-assigned ``id``.
+        """
+        resp = self._session.post(
+            f"{self.base_url}/api/runbook",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_runbook(self, runbook_id, body):
+        """Update an existing runbook.
+
+        Args:
+            runbook_id: Runbook ID (int or str).
+            body: Full runbook definition dict (same schema as create).
+
+        Returns:
+            dict: The updated runbook.
+        """
+        resp = self._session.put(
+            f"{self.base_url}/api/runbook/{runbook_id}",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_runbook(self, runbook_id):
+        """Delete a runbook.
+
+        Args:
+            runbook_id: Runbook ID (int or str).
+
+        Returns:
+            dict or None: API response body, or None if empty.
+        """
+        resp = self._session.delete(
+            f"{self.base_url}/api/runbook/{runbook_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    def enable_runbook(self, runbook_id):
+        """Enable a runbook.
+
+        Args:
+            runbook_id: Runbook ID (int or str).
+
+        Returns:
+            dict or None: API response body.
+        """
+        resp = self._session.put(
+            f"{self.base_url}/api/runbook/{runbook_id}/enable",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    def disable_runbook(self, runbook_id):
+        """Disable a runbook.
+
+        Args:
+            runbook_id: Runbook ID (int or str).
+
+        Returns:
+            dict or None: API response body.
+        """
+        resp = self._session.put(
+            f"{self.base_url}/api/runbook/{runbook_id}/disable",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    def run_runbook(self, runbook_id):
+        """Trigger an immediate on-demand run of a runbook.
+
+        Args:
+            runbook_id: Runbook ID (int or str).
+
+        Returns:
+            dict or None: API response body.
+        """
+        resp = self._session.post(
+            f"{self.base_url}/api/runbook/{runbook_id}/run-now",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
     def export_runbooks(self, name=None, output_dir="runbooks"):
         """Export all runbooks (or one by name) to JSON files.
 
@@ -1603,6 +1724,915 @@ class ArmorCodeClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    # ------------------------------------------------------------------
+    # Finding Actions (single-finding and bulk)
+    # ------------------------------------------------------------------
+
+    def get_finding(self, finding_id):
+        """Get full detail for a single finding.
+
+        Args:
+            finding_id: Finding ID (int).
+
+        Returns:
+            dict: Full finding detail.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/findings/{finding_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def _bulk_finding_action(self, endpoint, finding_ids, extra=None):
+        """Internal helper for bulk finding status-change actions.
+
+        Args:
+            endpoint: Path suffix after /user/findings/bulk/.
+            finding_ids: List of finding IDs to act on.
+            extra: Extra fields to merge into the request body.
+
+        Returns:
+            dict or None: API response body.
+        """
+        body = {"findingIds": list(finding_ids)}
+        if extra:
+            body.update(extra)
+        resp = self._session.put(
+            f"{self.base_url}/user/findings/bulk/{endpoint}",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    def bulk_accept_risk(self, finding_ids, reason=None, notes=None):
+        """Accept risk on a set of findings.
+
+        Args:
+            finding_ids: List of finding IDs.
+            reason: Optional reason string.
+            notes: Optional notes string.
+
+        Returns:
+            dict or None: API response body.
+        """
+        extra = {}
+        if reason:
+            extra["reason"] = reason
+        if notes:
+            extra["notes"] = notes
+        return self._bulk_finding_action("accept-risk", finding_ids, extra)
+
+    def bulk_false_positive(self, finding_ids, reason=None, notes=None):
+        """Mark a set of findings as false positives.
+
+        Args:
+            finding_ids: List of finding IDs.
+            reason: Optional reason string.
+            notes: Optional notes string.
+
+        Returns:
+            dict or None: API response body.
+        """
+        extra = {}
+        if reason:
+            extra["reason"] = reason
+        if notes:
+            extra["notes"] = notes
+        return self._bulk_finding_action("false-positive", finding_ids, extra)
+
+    def bulk_suppress(self, finding_ids, reason=None, notes=None):
+        """Suppress a set of findings.
+
+        Args:
+            finding_ids: List of finding IDs.
+            reason: Optional reason string.
+            notes: Optional notes string.
+
+        Returns:
+            dict or None: API response body.
+        """
+        extra = {}
+        if reason:
+            extra["reason"] = reason
+        if notes:
+            extra["notes"] = notes
+        return self._bulk_finding_action("suppressed", finding_ids, extra)
+
+    def bulk_reopen(self, finding_ids):
+        """Reopen a set of findings.
+
+        Args:
+            finding_ids: List of finding IDs.
+
+        Returns:
+            dict or None: API response body.
+        """
+        return self._bulk_finding_action("reopen", finding_ids)
+
+    def bulk_confirm(self, finding_ids):
+        """Confirm a set of findings.
+
+        Args:
+            finding_ids: List of finding IDs.
+
+        Returns:
+            dict or None: API response body.
+        """
+        return self._bulk_finding_action("confirm", finding_ids)
+
+    def bulk_change_severity(self, finding_ids, severity):
+        """Change severity for a set of findings.
+
+        Args:
+            finding_ids: List of finding IDs.
+            severity: New severity string, e.g. ``"High"``.
+
+        Returns:
+            dict or None: API response body.
+        """
+        return self._bulk_finding_action("severity", finding_ids, {"severity": severity})
+
+    def bulk_assign_owner(self, finding_ids, owner_id):
+        """Assign an owner to a set of findings.
+
+        Args:
+            finding_ids: List of finding IDs.
+            owner_id: User ID (int) of the new owner.
+
+        Returns:
+            dict or None: API response body.
+        """
+        return self._bulk_finding_action("assign-owner", finding_ids, {"ownerId": owner_id})
+
+    def update_finding_tags(self, finding_ids, tags, update_type="ADD"):
+        """Update tags on a set of findings.
+
+        Hits ``PUT /user/findings/findingTags``. Tags are a flat list of
+        ``"key:value"`` strings. The ``update_type`` controls whether the
+        provided tags are added to, removed from, or replace the existing set.
+
+        Args:
+            finding_ids: List of finding IDs (int).
+            tags: List of tag strings, e.g. ``["env:prod", "team:security"]``.
+            update_type: ``"ADD"`` (default), ``"REMOVE"``, or ``"REPLACE"``.
+
+        Returns:
+            dict or None: API response body.
+        """
+        body = {
+            "findingIds": list(finding_ids),
+            "findingTags": list(tags),
+            "updateType": update_type,
+        }
+        resp = self._session.put(
+            f"{self.base_url}/user/findings/findingTags",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    def get_finding_comments(self, finding_id, page=0, size=20):
+        """Get comments on a finding.
+
+        Args:
+            finding_id: Finding ID (int).
+            page: Page number (0-based).
+            size: Page size.
+
+        Returns:
+            dict: Paginated comment list.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/findings/{finding_id}/comment",
+            params={"page": page, "size": size},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def add_finding_comment(self, finding_id, text):
+        """Add a comment to a finding.
+
+        Args:
+            finding_id: Finding ID (int).
+            text: Comment text (plain or markdown).
+
+        Returns:
+            dict: The created comment object.
+        """
+        body = {"note": text, "markdownText": text}
+        resp = self._session.post(
+            f"{self.base_url}/user/findings/{finding_id}/comment",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def bulk_add_finding_comment(self, finding_ids, text):
+        """Add the same comment to multiple findings at once.
+
+        Args:
+            finding_ids: List of finding IDs (int).
+            text: Comment text (plain or markdown).
+
+        Returns:
+            dict or None: API response body.
+        """
+        body = {
+            "findingIds": list(finding_ids),
+            "findingCommentRequests": [{"note": text, "markdownText": text}],
+        }
+        resp = self._session.post(
+            f"{self.base_url}/api/finding/bulk-comment",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    # ------------------------------------------------------------------
+    # Exceptions (Risk Register)
+    # ------------------------------------------------------------------
+
+    def get_exceptions(self):
+        """List all open exceptions (risk register entries).
+
+        Returns:
+            list[dict]: Open exceptions with id, name, scope, dates, status.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/risk-register/open",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else data.get("content", [])
+
+    def get_exception(self, exception_id):
+        """Get full detail for a single exception.
+
+        Args:
+            exception_id: Exception (risk register) ID (int).
+
+        Returns:
+            dict: Exception detail including scope, approvers, findings.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/risk-register/{exception_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def create_exception(self, name, description=None, start_date=None,
+                         end_date=None, reasons=None, extra=None):
+        """Create a new exception (risk register entry).
+
+        Args:
+            name: Exception name.
+            description: Optional description.
+            start_date: ISO 8601 date string, e.g. ``"2025-01-01"``.
+            end_date: ISO 8601 date string for when the exception expires.
+            reasons: List of reason strings.
+            extra: Optional dict merged into the request body (e.g. ``scope``,
+                   ``subscribersUserIds``).
+
+        Returns:
+            dict: The created exception with its server-assigned ``id``.
+        """
+        body = {"name": name}
+        if description is not None:
+            body["description"] = description
+        if start_date is not None:
+            body["startDate"] = start_date
+        if end_date is not None:
+            body["endDate"] = end_date
+        if reasons is not None:
+            body["reasons"] = list(reasons)
+        if extra:
+            body.update(extra)
+        resp = self._session.post(
+            f"{self.base_url}/api/risk-register",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_exception(self, exception_id, *, name=None, description=None,
+                         start_date=None, end_date=None, reasons=None,
+                         extra=None):
+        """Update an existing exception.
+
+        Args:
+            exception_id: Exception (risk register) ID (int).
+            name: New name.
+            description: New description.
+            start_date: New start date ISO string.
+            end_date: New end/expiry date ISO string.
+            reasons: New reasons list.
+            extra: Optional dict merged into the request body.
+
+        Returns:
+            dict: The updated exception.
+        """
+        current = self.get_exception(exception_id)
+        body = dict(current)
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if start_date is not None:
+            body["startDate"] = start_date
+        if end_date is not None:
+            body["endDate"] = end_date
+        if reasons is not None:
+            body["reasons"] = list(reasons)
+        if extra:
+            body.update(extra)
+        resp = self._session.put(
+            f"{self.base_url}/api/risk-register/{exception_id}",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_exception(self, exception_id):
+        """Delete an exception.
+
+        Args:
+            exception_id: Exception (risk register) ID (int).
+
+        Returns:
+            dict or None: API response body.
+        """
+        resp = self._session.delete(
+            f"{self.base_url}/api/risk-register/{exception_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    # ------------------------------------------------------------------
+    # Scans
+    # ------------------------------------------------------------------
+
+    def get_scans(self, page=0, size=50, filters=None):
+        """List scans for the tenant.
+
+        Args:
+            page: Page number (0-based).
+            size: Page size.
+            filters: Optional filter dict (e.g. ``{"subProduct": [123]}``)
+                     passed as query params via ``scanReportReqDto``.
+
+        Returns:
+            dict: Paginated response with ``content`` and ``totalElements``.
+        """
+        params = {"page": page, "size": size}
+        if filters:
+            params.update(filters)
+        resp = self._session.get(
+            f"{self.base_url}/api/scans",
+            params=params,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_scan(self, scan_id):
+        """Get detail for a single scan.
+
+        Args:
+            scan_id: Scan ID (int or str).
+
+        Returns:
+            dict: Scan detail including status, tool, sub-product, timing.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/scans/{scan_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------------
+    # Alerts
+    # ------------------------------------------------------------------
+
+    def get_alerts(self, severity=None, status=None, product=None,
+                   sub_product=None, page=0, size=50, extra_filters=None):
+        """Search and retrieve alerts.
+
+        Uses ``POST /api/alerts`` (the non-deprecated search endpoint).
+
+        Args:
+            severity: List of severity strings, e.g. ``["HIGH", "CRITICAL"]``.
+            status: List of status strings, e.g. ``["OPEN"]``.
+            product: List of product IDs (int) to filter by.
+            sub_product: List of sub-product IDs (int) to filter by.
+            page: Page number (0-based).
+            size: Page size.
+            extra_filters: Additional filter fields merged into the request body.
+
+        Returns:
+            dict: Paginated alerts response.
+        """
+        body = {}
+        if severity:
+            body["severity"] = list(severity)
+        if status:
+            body["status"] = list(status)
+        if product:
+            body["product"] = list(product)
+        if sub_product:
+            body["subProduct"] = list(sub_product)
+        if extra_filters:
+            body.update(extra_filters)
+        resp = self._session.post(
+            f"{self.base_url}/api/alerts",
+            params={"page": page, "size": size},
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------------
+    # Engagements (CRUD)
+    # ------------------------------------------------------------------
+
+    def get_engagement(self, engagement_id):
+        """Get full detail for a single engagement.
+
+        Args:
+            engagement_id: Engagement ID (int).
+
+        Returns:
+            dict: Engagement detail.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/project/{engagement_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def create_engagement(self, name, description, *, type=None,
+                          start_date=None, end_date=None, status=None,
+                          tags=None, extra=None):
+        """Create a new engagement.
+
+        Args:
+            name: Engagement name (required).
+            description: Description (required by the API).
+            type: Engagement type string (e.g. ``"pentest"``).
+            start_date: ISO 8601 date string, e.g. ``"2025-01-01"``.
+            end_date: ISO 8601 date string.
+            status: Status string, e.g. ``"ACTIVE"``.
+            tags: List of tag strings.
+            extra: Optional dict merged into the request body.
+
+        Returns:
+            dict: The created engagement with its server-assigned ``id``.
+        """
+        body = {"name": name, "description": description}
+        if type is not None:
+            body["type"] = type
+        if start_date is not None:
+            body["startDate"] = start_date
+        if end_date is not None:
+            body["endDate"] = end_date
+        if status is not None:
+            body["status"] = status
+        if tags is not None:
+            body["tags"] = list(tags)
+        if extra:
+            body.update(extra)
+        resp = self._session.post(
+            f"{self.base_url}/user/project",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_engagement(self, engagement_id, *, name=None, description=None,
+                          type=None, start_date=None, end_date=None,
+                          status=None, tags=None, extra=None):
+        """Update an existing engagement.
+
+        Args:
+            engagement_id: Engagement ID (int).
+            name: New name.
+            description: New description.
+            type: New type string.
+            start_date: New start date ISO string.
+            end_date: New end date ISO string.
+            status: New status string.
+            tags: New tag list (replaces existing tags).
+            extra: Optional dict merged into the request body.
+
+        Returns:
+            dict: The updated engagement.
+        """
+        current = self.get_engagement(engagement_id)
+        body = dict(current)
+        body["id"] = engagement_id
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if type is not None:
+            body["type"] = type
+        if start_date is not None:
+            body["startDate"] = start_date
+        if end_date is not None:
+            body["endDate"] = end_date
+        if status is not None:
+            body["status"] = status
+        if tags is not None:
+            body["tags"] = list(tags)
+        if extra:
+            body.update(extra)
+        resp = self._session.put(
+            f"{self.base_url}/user/project",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_engagement(self, engagement_id):
+        """Delete an engagement.
+
+        Args:
+            engagement_id: Engagement ID (int).
+
+        Returns:
+            dict or None: API response body.
+        """
+        resp = self._session.delete(
+            f"{self.base_url}/user/project/{engagement_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    # ------------------------------------------------------------------
+    # Teams (CRUD)
+    # ------------------------------------------------------------------
+
+    def create_team(self, name, description=None, lead_id=None, members=None,
+                    extra=None):
+        """Create a new team.
+
+        Args:
+            name: Team name (required).
+            description: Optional description.
+            lead_id: Optional user ID (int) of the team lead.
+            members: Optional list of member dicts, each with ``userId`` and
+                     ``role`` keys, e.g.
+                     ``[{"userId": 123, "role": "MEMBER"}]``.
+            extra: Optional dict merged into the request body.
+
+        Returns:
+            dict: The created team with its server-assigned ``id``.
+        """
+        body = {"name": name}
+        if description is not None:
+            body["description"] = description
+        if lead_id is not None:
+            body["leadId"] = lead_id
+        if members is not None:
+            body["members"] = list(members)
+        if extra:
+            body.update(extra)
+        resp = self._session.post(
+            f"{self.base_url}/api/team",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_team(self, team_id, *, name=None, description=None,
+                    members=None, extra=None):
+        """Update an existing team.
+
+        Fetches current team state and sends it back with requested changes.
+
+        Args:
+            team_id: Team ID (int).
+            name: New name.
+            description: New description.
+            members: New members list (replaces existing).
+            extra: Optional dict merged into the request body.
+
+        Returns:
+            dict: The updated team.
+        """
+        current = self.get_team(team_id)
+        body = dict(current)
+        body["id"] = team_id
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if members is not None:
+            body["members"] = list(members)
+        if extra:
+            body.update(extra)
+        resp = self._session.put(
+            f"{self.base_url}/api/team",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_team(self, team_id):
+        """Delete a team.
+
+        Args:
+            team_id: Team ID (int).
+
+        Returns:
+            dict or None: API response body.
+        """
+        resp = self._session.delete(
+            f"{self.base_url}/api/team/{team_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    def add_team_members(self, team_id, members):
+        """Add members to a team.
+
+        Args:
+            team_id: Team ID (int).
+            members: List of member dicts, each with ``userId`` (int) and
+                     ``role`` (str) keys, e.g.
+                     ``[{"userId": 123, "role": "MEMBER"}]``.
+
+        Returns:
+            dict or None: API response body.
+        """
+        resp = self._session.post(
+            f"{self.base_url}/api/v2/team/{team_id}/members",
+            json={"members": list(members)},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    # ------------------------------------------------------------------
+    # Users (CRUD)
+    # ------------------------------------------------------------------
+
+    def search_users(self, search_text=None, email=None, role=None, team=None,
+                     page=0, size=50):
+        """Search and filter users in the tenant.
+
+        Args:
+            search_text: Free-text search string (matches name or email).
+            email: List of email addresses to filter by.
+            role: List of role strings to filter by.
+            team: List of team IDs (int) to filter by.
+            page: Page number (0-based).
+            size: Page size.
+
+        Returns:
+            dict: Paginated user list.
+        """
+        body = {}
+        if search_text:
+            body["searchText"] = [search_text] if isinstance(search_text, str) else list(search_text)
+        if email:
+            body["email"] = list(email)
+        if role:
+            body["role"] = list(role)
+        if team:
+            body["team"] = list(team)
+        resp = self._session.post(
+            f"{self.base_url}/api/v2/user/search",
+            params={"pageRequest": f"page={page}&size={size}"},
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def create_user(self, name, email, tenant_role, *, disable_login=False,
+                    team_info=None, extra=None):
+        """Create a new user in the tenant.
+
+        Args:
+            name: User's display name.
+            email: User's email address.
+            tenant_role: Role string, e.g. ``"ADMIN"``, ``"USER"``.
+            disable_login: If True, the user cannot log in interactively.
+            team_info: Optional list of team assignment dicts, each with
+                       ``teamId`` and ``role`` keys.
+            extra: Optional dict merged into the request body.
+
+        Returns:
+            dict: The created user object.
+        """
+        body = {
+            "name": name,
+            "email": email,
+            "tenantRole": tenant_role,
+            "disableLogin": disable_login,
+        }
+        if team_info is not None:
+            body["teamInfo"] = list(team_info)
+        if extra:
+            body.update(extra)
+        resp = self._session.post(
+            f"{self.base_url}/user/add/user",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_user(self, user_id, *, name=None, email=None, tenant_role=None,
+                    disable_login=None, team_info=None, extra=None):
+        """Update an existing user.
+
+        Args:
+            user_id: User ID (int, required).
+            name: New display name.
+            email: New email address.
+            tenant_role: New role string.
+            disable_login: Enable/disable interactive login.
+            team_info: New team assignments list.
+            extra: Optional dict merged into the request body.
+
+        Returns:
+            dict: The updated user object.
+        """
+        body = {"id": user_id}
+        if name is not None:
+            body["name"] = name
+        if email is not None:
+            body["email"] = email
+        if tenant_role is not None:
+            body["tenantRole"] = tenant_role
+        if disable_login is not None:
+            body["disableLogin"] = disable_login
+        if team_info is not None:
+            body["teamInfo"] = list(team_info)
+        if extra:
+            body.update(extra)
+        resp = self._session.put(
+            f"{self.base_url}/user/update/user",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------------
+    # Assessments (Pentests)
+    # ------------------------------------------------------------------
+
+    def get_assessments(self, page=0, size=50):
+        """List all assessments (pentests).
+
+        Args:
+            page: Page number (0-based).
+            size: Page size.
+
+        Returns:
+            dict: Paginated list of assessments.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/assessments",
+            params={"page": page, "size": size},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_assessment(self, assessment_id):
+        """Get full detail for a single assessment.
+
+        Args:
+            assessment_id: Assessment ID (int).
+
+        Returns:
+            dict: Assessment detail including scope, assessors, status, dates.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/assessments/{assessment_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def create_assessment(self, name, type, start_date, end_date, status,
+                          scope, assessors, *, notes=None, extra=None):
+        """Create a new assessment (pentest).
+
+        Args:
+            name: Assessment name (required).
+            type: Assessment type string (required), e.g. ``"External"``.
+            start_date: ISO 8601 date string, e.g. ``"2025-01-01"`` (required).
+            end_date: ISO 8601 date string (required).
+            status: Status string, e.g. ``"IN_PROGRESS"`` (required).
+            scope: Scope dict (required), e.g. ``{"subProducts": [123]}``.
+            assessors: List of assessor user IDs (int) (required).
+            notes: Optional notes string.
+            extra: Optional dict merged into the request body.
+
+        Returns:
+            dict: The created assessment with its server-assigned ``id``.
+        """
+        body = {
+            "name": name,
+            "type": type,
+            "startDate": start_date,
+            "endDate": end_date,
+            "status": status,
+            "scope": scope,
+            "assessors": list(assessors),
+        }
+        if notes is not None:
+            body["notes"] = notes
+        if extra:
+            body.update(extra)
+        resp = self._session.post(
+            f"{self.base_url}/api/assessments",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_assessment(self, assessment_id):
+        """Delete an assessment.
+
+        Args:
+            assessment_id: Assessment ID (int).
+
+        Returns:
+            dict or None: API response body.
+        """
+        resp = self._session.delete(
+            f"{self.base_url}/api/assessments/{assessment_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
 
     # ------------------------------------------------------------------
     # API Discovery
