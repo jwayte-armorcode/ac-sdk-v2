@@ -9,12 +9,36 @@ All methods are on the `ArmorCodeClient` class. For filter values and finding-sp
 | `get_findings(severities, statuses, days_back, extra_filters, dump_path, size)` | Bulk pull with filters; caches locally; auto-chunks if >10K — see [findings.md](findings.md) |
 | `get_findings_by_hierarchy(product, sub_product, team, severities, statuses, sources, extra_filters, page_size)` | Fetch findings scoped to a product/sub-product/team hierarchy — names resolved to IDs automatically — see [findings.md](findings.md#hierarchy-filter) |
 | `get_findings_by_engagement(engagement, severities, statuses, sources, extra_filters, page_size)` | Fetch findings associated with an engagement (accepts name or id) — filters on `armorcodeProjects` — see [findings.md](findings.md#engagement-filter) |
+| `get_finding(finding_id)` | Full detail for a single finding by ID |
 | `get_engagements()` | List all engagements (id + name); the API's internal name is "project" (`/user/project`) |
 | `list_repos(findings)` | Repo names + finding counts from cached data |
 | `get_findings_by_repo(repo_name, findings)` | Filter cached findings to one repo |
 | `dump_json(path)` | Write cached findings to JSON |
 | `export_findings_csv(output_path, filters, filter_operations)` | Bulk export to CSV |
 | `upload_findings(findings, product, sub_product, environment)` | Insert custom findings via `POST /api/findings/upload` (Generic JSON). `product`/`sub_product` accept names (resolved to IDs). Returns `{"scanId": ...}` |
+
+## Finding Actions (Bulk)
+
+All bulk methods accept a list of finding IDs and act on them server-side.
+
+| Method | Description |
+|--------|-------------|
+| `bulk_accept_risk(finding_ids, reason, notes)` | Accept risk on a set of findings |
+| `bulk_false_positive(finding_ids, reason, notes)` | Mark findings as false positives |
+| `bulk_suppress(finding_ids, reason, notes)` | Suppress findings |
+| `bulk_reopen(finding_ids)` | Reopen findings |
+| `bulk_confirm(finding_ids)` | Confirm findings |
+| `bulk_change_severity(finding_ids, severity)` | Change severity (e.g. `"High"`) |
+| `bulk_assign_owner(finding_ids, owner_id)` | Assign owner by user ID |
+| `update_finding_tags(finding_ids, tags, update_type)` | Add/remove/replace tags on findings. `update_type` = `"ADD"` (default), `"REMOVE"`, or `"REPLACE"` |
+
+## Finding Comments
+
+| Method | Description |
+|--------|-------------|
+| `get_finding_comments(finding_id, page, size)` | Paginated comment list for a finding |
+| `add_finding_comment(finding_id, text)` | Post a comment on a finding |
+| `bulk_add_finding_comment(finding_ids, text)` | Post the same comment on multiple findings |
 
 ```python
 # Insert a custom finding (single dict or a list of dicts)
@@ -64,6 +88,10 @@ ac.upload_findings(
 | `get_team(team_id)` | Full team detail (members, owners, lead) |
 | `get_team_stats(environment)` | Statistics for all teams |
 | `get_team_leads()` | Users eligible as team leads |
+| `create_team(name, description, lead_id, members, extra)` | Create a new team |
+| `update_team(team_id, name, description, members, extra)` | Update team — fetches current state first |
+| `delete_team(team_id)` | Delete a team |
+| `add_team_members(team_id, members)` | Add members to a team (list of `{"userId": int, "role": str}`) |
 
 ## Products & Sub-Products
 
@@ -122,6 +150,51 @@ ac.get_tickets(product="my-product", page=1, size=50)     # paginate
 | Method | Description |
 |--------|-------------|
 | `get_users()` | List all tenant users with roles and activity |
+| `search_users(search_text, email, role, team, page, size)` | Search/filter users — returns paginated list |
+| `create_user(name, email, tenant_role, disable_login, team_info, extra)` | Create a new tenant user |
+| `update_user(user_id, name, email, tenant_role, disable_login, team_info, extra)` | Update an existing user |
+
+## Engagements (CRUD)
+
+| Method | Description |
+|--------|-------------|
+| `get_engagements()` | List all engagements (id + name) |
+| `get_engagement(engagement_id)` | Full detail for a single engagement |
+| `create_engagement(name, description, type, start_date, end_date, status, tags, extra)` | Create a new engagement |
+| `update_engagement(engagement_id, name, description, ...)` | Update engagement — fetches current state first |
+| `delete_engagement(engagement_id)` | Delete an engagement |
+
+## Assessments (Pentests)
+
+| Method | Description |
+|--------|-------------|
+| `get_assessments(page, size)` | List all assessments |
+| `get_assessment(assessment_id)` | Full detail for a single assessment |
+| `create_assessment(name, type, start_date, end_date, status, scope, assessors, notes, extra)` | Create an assessment |
+| `delete_assessment(assessment_id)` | Delete an assessment |
+
+## Exceptions (Risk Register)
+
+| Method | Description |
+|--------|-------------|
+| `get_exceptions()` | List all open exceptions |
+| `get_exception(exception_id)` | Full detail for a single exception |
+| `create_exception(name, description, start_date, end_date, reasons, extra)` | Create a new exception |
+| `update_exception(exception_id, name, description, start_date, end_date, reasons, extra)` | Update an exception — fetches current state first |
+| `delete_exception(exception_id)` | Delete an exception |
+
+## Scans
+
+| Method | Description |
+|--------|-------------|
+| `get_scans(page, size, filters)` | List scans for the tenant |
+| `get_scan(scan_id)` | Detail for a single scan |
+
+## Alerts
+
+| Method | Description |
+|--------|-------------|
+| `get_alerts(severity, status, product, sub_product, page, size, extra_filters)` | Search alerts with optional filters |
 
 ## Security Tools
 
@@ -135,6 +208,13 @@ ac.get_tickets(product="my-product", page=1, size=50)     # paginate
 | Method | Description |
 |--------|-------------|
 | `get_runbooks()` | List all automation runbooks |
+| `get_runbook(runbook_id)` | Full runbook detail (tasks, filters, schedule) |
+| `create_runbook(body)` | Create a new runbook — pass a full CreateRunbookRequest dict |
+| `update_runbook(runbook_id, body)` | Update an existing runbook |
+| `delete_runbook(runbook_id)` | Delete a runbook |
+| `enable_runbook(runbook_id)` | Enable a disabled runbook |
+| `disable_runbook(runbook_id)` | Disable a runbook |
+| `run_runbook(runbook_id)` | Trigger an immediate on-demand run |
 
 ## SLA
 
