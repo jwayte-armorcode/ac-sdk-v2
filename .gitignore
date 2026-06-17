@@ -1,6 +1,7 @@
 env
 github_creds
 *.json
+!docs/openapi.json
 *.xlsx
 __pycache__/
 *.pyc
