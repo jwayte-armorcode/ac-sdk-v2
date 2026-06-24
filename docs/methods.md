@@ -92,6 +92,24 @@ ac.upload_findings(
 | `update_team(team_id, name, description, members, extra)` | Update team — fetches current state first |
 | `delete_team(team_id)` | Delete a team |
 | `add_team_members(team_id, members)` | Add members to a team (list of `{"userId": int, "role": str}`) |
+| `update_team_with_user(team, owners)` | Set team owners via `PUT /api/team/with-user`, preserving members + scope-of-access |
+
+**Owner fields** (`update_team_with_user(team, owners={...})`): 5 keys —
+`complianceOwner`, `securityOwner`, `engineeringOwner`, `businessOwner`,
+`supportOwner`. The Aledade tenant relabels these in global-settings Titles:
+AppSec Engineer → complianceOwner, Security Ambassador → securityOwner, Aledade
+Director → engineeringOwner, Aledade PM → businessOwner, **Aledade VP →
+supportOwner**.
+
+**Scope-of-access gotcha:** `PUT /api/team/with-user` is a FULL REPLACE. Its
+`members` and `properties` (scope) payloads use a DIFFERENT shape than the GET
+returns — sending the GET shape back silently drops members/scope (returns 200
+but wipes them). `update_team_with_user` handles the conversion: members use
+`role` as a NAME string; scope uses flat `businessUnitId`/`businessUnitName` and
+`product`/`subProduct` as bare ints. Always pass a fresh `get_team()` result so
+existing owners/members/scope are round-tripped. Set an owner first as a team
+*member* (`add_user_to_team`) BEFORE making them an owner, or the PUT can drop
+existing members.
 
 ## Products & Sub-Products
 
@@ -145,14 +163,45 @@ ac.get_tickets()                                           # all tickets
 ac.get_tickets(product="my-product", page=1, size=50)     # paginate
 ```
 
-## Users
+## Users & Roles
 
 | Method | Description |
 |--------|-------------|
-| `get_users()` | List all tenant users with roles and activity |
-| `search_users(search_text, email, role, team, page, size)` | Search/filter users — returns paginated list |
-| `create_user(name, email, tenant_role, disable_login, team_info, extra)` | Create a new tenant user |
-| `update_user(user_id, name, email, tenant_role, disable_login, team_info, extra)` | Update an existing user |
+| `get_users()` | All tenant users via `/user/data/users` (roles + activity) |
+| `get_users_flat()` | All users via `/user/get-users` (id, email, displayName, name) |
+| `search_users(search_text, email, role, team, page, size)` | Filtered user search via `POST /api/v2/user/search` (one page) |
+| `search_users_all(page_size)` | ALL users WITH teamInfo + tenantRole, auto-paginated |
+| `get_roles()` | All tenant roles via `/user/roles` (id, name, permissionSet) |
+| `email_available(email)` | True if email is free (pre-check before creating) |
+| `create_user(name, email, tenant_role, disable_login, team_info, extra)` | Create a user via `POST /user/add/user` → returns created user dict |
+| `create_team_member_user(email, disable_login, check_availability)` | Create an email-only user with a placeholder role → returns new id (clear role later via `add_user_to_team`) |
+| `update_user(user_id, name, email, tenant_role, disable_login, team_info, extra)` | Per-field update via `PUT /user/update/user` |
+| `delete_user(user_id)` | Delete via `DELETE /api/v2/user/{id}` |
+| `add_user_to_team(user, team_id, team_name, role_name, role_id, clear_tenant_role)` | Append a team to a user's teamInfo (optionally clearing tenantRole in the same PUT) |
+
+**tenantRole vs teamInfo role — two namespaces:**
+- *teamInfo role* — per-team membership role (e.g. `"Aledade Executive"`,
+  `"Aledada PM"`), used in `add_user_to_team` and team-owner assignment.
+- *tenantRole* — account-level role for `create_user`. Only a SUBSET of role
+  names are valid tenantRoles. Valid: Read Only, Admin, Developer, Security
+  Engineer, DevOps, Executive, Aledade Security Engineer, Aledade Engineering
+  Manager, Aledade Security Ambassadors, Aledada PM. **NOT valid:** "Aledade
+  Executive", "Aledade IT Manager", "Aledade Software Engineer", "Aledade IT
+  Engineer".
+
+**Creating a plain team member (no account role):** `POST /user/add/user`
+requires *some* tenantRole (null is rejected) and accepts no name field (display
+name = email). To replicate the common owner shape (`tenantRole=null` + real
+`teamInfo`): `create_team_member_user(email)` (creates with a `"Read Only"`
+placeholder), then `add_user_to_team(..., clear_tenant_role=True)` — that PUT
+clears the role AND adds the team in one call (a clear-to-null with an EMPTY
+teamInfo is rejected, so they must happen together). If the team role isn't
+assignable on the tenant the add fails — roll back with `delete_user` so no
+half-created account is stranded with the placeholder role.
+
+**Wipe safety:** `update_user` / `add_user_to_team` are FULL REPLACE — always
+round-trip `teamInfo` and `tenantRole` (from `search_users_all`) or they are
+nulled.
 
 ## Engagements (CRUD)
 

@@ -1336,6 +1336,368 @@ class ArmorCodeClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_users_flat(self):
+        """List all users via ``GET /user/get-users`` (id, email, displayName, name).
+
+        Lighter than :meth:`search_users` — no teamInfo/tenantRole. Useful for
+        name/email lookups. Note many Aledade accounts have no display name, so
+        ``displayName`` equals the email (match on email for those).
+
+        Returns:
+            list[dict]: Users with ``id``, ``email``, ``displayName``, ``name``.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/get-users",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def search_users_all(self, page_size=200):
+        """All users with full detail (teamInfo + tenantRole), auto-paginated
+        via ``POST /api/v2/user/search``.
+
+        Unlike :meth:`search_users` (which takes filters and returns one
+        paginated page), this returns the FULL flattened list across all pages.
+        These records carry the fields a bad ``PUT /user/update/user`` can
+        silently wipe (teamInfo memberships, account-level tenantRole) — always
+        round-trip them on updates.
+
+        Returns:
+            list[dict]: User records, each with ``userId``, ``email``,
+            ``teamInfo`` (list of {teamId, teamName, role, roleId}), and
+            ``tenantRole``.
+        """
+        users = []
+        page = 0
+        while True:
+            resp = self._session.post(
+                f"{self.base_url}/api/v2/user/search?page={page}&size={page_size}",
+                json={},
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+            content = data.get("content", [])
+            users.extend(content)
+            if data.get("last") or not content:
+                break
+            page += 1
+        return users
+
+    def get_roles(self):
+        """List all roles in the tenant via ``GET /user/roles``.
+
+        Two role namespaces exist (they overlap but are not interchangeable):
+
+        * **teamInfo roles** — per-team membership roles (e.g. ``"Aledade
+          Executive"``, ``"Aledada PM"``) used in a user's ``teamInfo`` and in
+          team-owner assignment.
+        * **tenantRoles** — account-level roles accepted by :meth:`create_user`.
+          Only a SUBSET of role names are valid tenantRoles. Confirmed valid:
+          Read Only, Admin, Developer, Security Engineer, DevOps, Executive,
+          Aledade Security Engineer, Aledade Engineering Manager, Aledade
+          Security Ambassadors, Aledada PM. NOT valid as tenantRoles: "Aledade
+          Executive", "Aledade IT Manager", "Aledade Software Engineer",
+          "Aledade IT Engineer".
+
+        Returns:
+            list[dict]: Roles, each with ``id``, ``role`` (name),
+            ``outOfBox``, ``permissionSet``, etc.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/user/roles",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def email_available(self, email):
+        """Check whether ``email`` is free (no existing user) before creating.
+
+        ``POST /api/v2/user/email/availability`` returns ``{"data": true}`` when
+        the email is AVAILABLE and ``{"data": false}`` when it is already taken.
+
+        Args:
+            email: Email address to check.
+
+        Returns:
+            bool: True if available (safe to create), False if taken.
+        """
+        resp = self._session.post(
+            f"{self.base_url}/api/v2/user/email/availability",
+            json={"email": email},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return bool(resp.json().get("data"))
+
+    # Lowest-privilege valid tenantRole, used as a transient placeholder when
+    # creating a user that will become a plain team member (see
+    # create_team_member_user).
+    CREATE_PLACEHOLDER_TENANT_ROLE = "Read Only"
+
+    def create_team_member_user(self, email, *, disable_login=False,
+                                check_availability=True):
+        """Create a user destined to be a plain team member (no account role),
+        returning the new user id.
+
+        Wraps the existing :meth:`create_user` with the conventions learned for
+        team-owner accounts:
+
+        * ``POST /user/add/user`` REQUIRES a tenantRole (``null`` is rejected
+          with "User Mapping Info Is Missing"), so the user is created with the
+          low-privilege placeholder ``CREATE_PLACEHOLDER_TENANT_ROLE``.
+        * It accepts NO name field, so the display name will be the email (an
+          "email-only" account, like many Aledade team-owner users).
+        * The placeholder is cleared LATER by :meth:`add_user_to_team` (with
+          ``clear_tenant_role=True``), which sets ``tenantRole=null`` and adds
+          the team in one PUT — a clear-to-null with an EMPTY teamInfo is
+          rejected, so they must happen together.
+
+        Args:
+            email: Email of the new user.
+            disable_login: Sets ``disableLogin`` on the new user.
+            check_availability: If True (default), return None without creating
+                                when the email is already taken (no duplicate).
+
+        Returns:
+            int or None: New user id, or None if the email was already taken.
+        """
+        if check_availability and not self.email_available(email):
+            return None
+        created = self.create_user(
+            name=email,
+            email=email,
+            tenant_role=self.CREATE_PLACEHOLDER_TENANT_ROLE,
+            disable_login=disable_login,
+        )
+        return created.get("id") if isinstance(created, dict) else created
+
+    def delete_user(self, user_id):
+        """Delete a user via ``DELETE /api/v2/user/{id}``.
+
+        Returns ``{"data": "deleted", "success": true}`` on success. Useful to
+        roll back a freshly-created user when a follow-up team add can't complete.
+
+        Args:
+            user_id: User id (int or str).
+
+        Returns:
+            dict or None: API response body, or None if empty.
+        """
+        resp = self._session.delete(
+            f"{self.base_url}/api/v2/user/{user_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    def add_user_to_team(self, user, team_id, team_name, role_name, role_id,
+                         *, clear_tenant_role=False):
+        """Add ``team_id`` to a user's ``teamInfo`` with the given role.
+
+        Sends a full-replace ``PUT /user/update/user`` that appends the new team
+        entry to the user's existing teamInfo (so prior memberships are kept).
+
+        IMPORTANT ordering: a user must be a MEMBER of a team (this call) BEFORE
+        being set as an owner of it (:meth:`update_team_with_user`); setting the
+        owner first can make the team PUT reconcile against a member list the new
+        owner isn't in and DROP existing members.
+
+        A non-null ``tenantRole`` makes a user account-level, which BLOCKS team
+        membership. Pass ``clear_tenant_role=True`` to send ``tenantRole: None``
+        in the same PUT as the team add — the only accepted way to convert a
+        placeholder-role (freshly created) user into a plain team member.
+
+        Args:
+            user: User record from :meth:`search_users_all` (needs ``userId``,
+                  ``email``, existing ``teamInfo``, ``tenantRole``, etc.).
+            team_id: Team id to add.
+            team_name: Team name (stored in the teamInfo entry).
+            role_name: teamInfo role NAME (e.g. ``"Aledade Executive"``).
+            role_id: teamInfo role id.
+            clear_tenant_role: If True, also set ``tenantRole`` to None.
+
+        Returns:
+            dict or None: API response body.
+        """
+        existing = user.get("teamInfo") or []
+        new_team_info = list(existing) + [{
+            "teamId": team_id,
+            "teamName": team_name,
+            "canBeModified": True,
+            "role": role_name,
+            "roleId": role_id,
+        }]
+        # Sent as a full-replace body to PUT /user/update/user directly (the
+        # generic update_user takes per-field kwargs and can't set tenantRole
+        # back to None, which the clear step requires).
+        body = {
+            "id": user["userId"],
+            "email": user["email"],
+            "disableLogin": user.get("disableLogin", False),
+            "teamInfo": new_team_info,
+            "tenantRole": None if clear_tenant_role else user.get("tenantRole"),
+            "name": user.get("name"),
+            "isBasicAuthEnabled": user.get("isBasicAuthEnabled", False),
+            "defaultBu": user.get("defaultBu"),
+        }
+        resp = self._session.put(
+            f"{self.base_url}/user/update/user",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    # ------------------------------------------------------------------
+    # Team update (owners / members / scope) — PUT /api/team/with-user
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _team_put_members(members):
+        """Convert GET-shape team members to the PUT shape for
+        ``/api/team/with-user``. ``role`` must be the NAME STRING (GET returns
+        ``{id, name}``); sending the bare id makes the server drop the member."""
+        out = []
+        for m in members or []:
+            role = m.get("role")
+            role_name = role.get("name") if isinstance(role, dict) else role
+            user = m.get("user") or {}
+            out.append({
+                "user": {"id": user.get("id")},
+                "role": role_name,
+                "disableLogin": (m.get("disableLogin")
+                                 if m.get("disableLogin") is not None else False),
+            })
+        return out
+
+    @staticmethod
+    def _team_put_properties(properties):
+        """Convert a team's GET-shape ``properties`` (scope-of-access) into the
+        shape ``PUT /api/team/with-user`` requires. These shapes DIFFER — sending
+        the GET shape back makes the server silently DROP the scope (the team
+        becomes all-BU/all-product). Confirmed against a working UI payload::
+
+            GET shape                          ->  PUT shape (required)
+            businessUnit: {id, name}           ->  businessUnitId, businessUnitName (flat)
+            productSubProductMap[].product:        product: <int>  (bare int)
+              {id, name}
+            productSubProductMap[].subProducts:    subProduct: [<int>...]  (singular key)
+              [{id, name}]
+        """
+        def _int(v):
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return v
+
+        out = []
+        for prop in properties or []:
+            np = {
+                "accessOnAllProduct": prop.get("accessOnAllProduct"),
+                "groups": prop.get("groups") or [],
+            }
+            if prop.get("id") is not None:
+                np["id"] = prop.get("id")
+            bu = prop.get("businessUnit")
+            if isinstance(bu, dict):
+                np["businessUnitId"] = _int(bu.get("id"))
+                np["businessUnitName"] = bu.get("name")
+            else:
+                if prop.get("businessUnitId") is not None:
+                    np["businessUnitId"] = _int(prop.get("businessUnitId"))
+                if prop.get("businessUnitName") is not None:
+                    np["businessUnitName"] = prop.get("businessUnitName")
+            maps = []
+            for m in (prop.get("productSubProductMap") or []):
+                product = m.get("product")
+                product_id = product.get("id") if isinstance(product, dict) else product
+                subs_in = m.get("subProducts")
+                if subs_in is None:
+                    subs_in = m.get("subProduct") or []
+                maps.append({
+                    "product": _int(product_id),
+                    "subProduct": [_int(sp.get("id") if isinstance(sp, dict) else sp)
+                                   for sp in subs_in],
+                    "accessOnAllSubProduct": m.get("accessOnAllSubProduct"),
+                })
+            np["productSubProductMap"] = maps
+            out.append(np)
+        return out
+
+    # The 5 team owner-field keys (UI labels in parens are the Aledade tenant's
+    # global-settings Titles): complianceOwner (AppSec Engineer), securityOwner
+    # (Security Ambassador), engineeringOwner (Aledade Director), businessOwner
+    # (Aledade PM), supportOwner (Aledade VP).
+    _TEAM_OWNER_KEYS = (
+        "complianceOwner", "securityOwner", "engineeringOwner",
+        "businessOwner", "supportOwner",
+    )
+
+    def update_team_with_user(self, team, *, owners=None):
+        """Update a team's owners via ``PUT /api/team/with-user``, preserving
+        members and scope-of-access.
+
+        This is a FULL-REPLACE PUT: every owner, the member list, and the
+        ``properties`` (scope) must be carried through or they are wiped. This
+        method round-trips all of them from ``team`` (a GET response) and applies
+        only the requested owner overrides. Members are re-serialized with role
+        as a NAME string, and scope ``properties`` are converted to the flat PUT
+        shape (see :meth:`_team_put_properties`) — both required to avoid silent
+        member/scope wipes.
+
+        Set an owner by passing ``owners={"businessOwner": user_id, ...}`` using
+        any of the keys in ``_TEAM_OWNER_KEYS``.
+
+        Args:
+            team: Full team detail from :meth:`get_team`.
+            owners: Optional dict of ``owner_field -> user_id`` overrides.
+
+        Returns:
+            dict: API response (the updated team).
+        """
+        team_id = team["id"]
+        body = {
+            "id": team_id,
+            "name": team["name"],
+            "description": team.get("description"),
+            "members": self._team_put_members(team.get("members") or []),
+            "properties": self._team_put_properties(team.get("properties") or []),
+            "approvalWorkflow": team.get("approvalWorkflow") or {"approvers": []},
+            "emailAlias": team.get("emailAlias"),
+            "msTeamsLoginId": team.get("msTeamsLoginId"),
+            "msTeamsChannel": team.get("msTeamsChannel") or [],
+            "accessOnAllBusinessUnits": team.get("accessOnAllBusinessUnits", True),
+        }
+        # Preserve every existing owner (full-replace nulls omitted fields).
+        for key in self._TEAM_OWNER_KEYS:
+            existing = team.get(key)
+            if existing and existing.get("id"):
+                body[key] = {"id": existing["id"]}
+        # Apply requested overrides.
+        for key, user_id in (owners or {}).items():
+            body[key] = {"id": user_id}
+
+        resp = self._session.put(
+            f"{self.base_url}/api/team/with-user",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     # ------------------------------------------------------------------
     # Assets  (POST /api/v2/assets, max page size 100)
     # ------------------------------------------------------------------
