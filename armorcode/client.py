@@ -2709,6 +2709,89 @@ class ArmorCodeClient:
         resp.raise_for_status()
         return resp.json()
 
+    def create_team_scoped(self, name, group_scopes, *, description="",
+                           members=None, business_unit_id=4255,
+                           business_unit_name="Default Organization",
+                           email_alias="", extra=None):
+        """Create a team scoped to specific groups (products) / subgroups.
+
+        Unlike :meth:`create_team`, this builds the ``properties`` access map
+        that grants the team access to one or more groups, optionally limited
+        to specific subgroups (sub-products) within each.
+
+        Args:
+            name: Team name (required).
+            group_scopes: Iterable describing what the team can access. Each
+                entry is either:
+
+                  * a group **name** (str) or group **id** (int) — grants
+                    whole-group access (``accessOnAllSubProduct: true`` with an
+                    empty ``subProduct`` list), or
+                  * a ``(group, subgroups)`` tuple where ``group`` is a name or
+                    id and ``subgroups`` is a list of sub-product ids. An empty
+                    or ``None`` ``subgroups`` also means whole-group access.
+
+                Group names are resolved to ids via exact-match lookup.
+            description: Optional team description.
+            members: Optional list of member dicts (``userId``/``role``).
+            business_unit_id / business_unit_name: Business unit the access map
+                is created under (defaults to the tenant "Default Organization").
+            email_alias: Optional team email alias.
+            extra: Optional dict merged into the top-level request body.
+
+        Returns:
+            dict: The created team with its server-assigned ``id``.
+
+        Note:
+            The backend honours ``accessOnAllSubProduct``. This method sets it
+            to ``False`` only when explicit ``subgroups`` are supplied, and
+            ``True`` (whole-group) otherwise. When ``True``, the server stores
+            an empty subProduct list regardless of any ids passed.
+        """
+        psp_map = []
+        for entry in group_scopes:
+            if isinstance(entry, (list, tuple)):
+                group, subgroups = entry[0], (entry[1] if len(entry) > 1 else None)
+            else:
+                group, subgroups = entry, None
+
+            if isinstance(group, int) or (isinstance(group, str) and group.isdigit()):
+                pid = int(group)
+            else:
+                pid = self._lookup_product_id(group)
+
+            subs = list(subgroups) if subgroups else []
+            psp_map.append({
+                "product": pid,
+                "subProduct": subs,
+                "accessOnAllSubProduct": not subs,
+            })
+
+        body = {
+            "name": name,
+            "description": description,
+            "members": list(members) if members else [],
+            "properties": [{
+                "businessUnitId": business_unit_id,
+                "businessUnitName": business_unit_name,
+                "productSubProductMap": psp_map,
+                "accessType": "individual",
+                "groups": [],
+            }],
+            "emailAlias": email_alias,
+            "accessOnAllBusinessUnits": False,
+            "approvalWorkflow": {"approvers": []},
+        }
+        if extra:
+            body.update(extra)
+        resp = self._session.post(
+            f"{self.base_url}/api/team",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def update_team(self, team_id, *, name=None, description=None,
                     members=None, extra=None):
         """Update an existing team.
