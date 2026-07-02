@@ -2,6 +2,7 @@
 
 import json
 import time
+import warnings
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -236,13 +237,36 @@ class ArmorCodeClient:
 
         return all_findings
 
+    # Smallest date window worth splitting further. Below this, further
+    # time-slicing stops reducing the count (e.g. a bulk ingest that stamped
+    # every finding with the same ``foundOn``), so we fall back to the
+    # severity axis instead. One minute in milliseconds.
+    _MIN_CHUNK_MS = 60 * 1000
+
+    # Severity axis used as a fallback partition when a date window cannot be
+    # reduced below _MAX_RESULTS by time-splitting. Title-case, matching the
+    # casing the findings API expects in filters.
+    _SEVERITY_AXIS = ["Critical", "High", "Medium", "Low", "Info"]
+
     def _chunked_fetch(self, base_filters, base_filter_ops, start_ms, end_ms, total, page_size):
         """Split a large query into date-range chunks under 10K each.
 
         Uses even splitting: divides [start_ms, end_ms] into enough slices to
         keep each under 10K, then fetches each slice. Slices that are still
         over 10K are split recursively using the same window boundaries.
+
+        If a window can no longer be usefully reduced by time-splitting (its
+        duration has shrunk below ``_MIN_CHUNK_MS`` but it still holds more than
+        ``_MAX_RESULTS`` findings — e.g. a single day of bulk-ingested findings
+        sharing one ``foundOn`` timestamp), the window is re-partitioned by
+        severity instead so no findings are silently truncated at the 10K cap.
         """
+        # Window already at/below the minimum splittable duration but still over
+        # the cap — time-slicing it further just yields identical sub-windows, so
+        # partition by severity directly instead of fanning out redundantly.
+        if (end_ms - start_ms) <= self._MIN_CHUNK_MS:
+            return self._severity_fetch(base_filters, base_filter_ops, page_size)
+
         num_chunks = max(2, (total // (self._MAX_RESULTS // 2)) + 1)
         chunk_duration = (end_ms - start_ms) // num_chunks
 
@@ -260,22 +284,65 @@ class ArmorCodeClient:
 
             chunk_total = self._probe_count(chunk_filters, chunk_ops)
 
-            if chunk_total > self._MAX_RESULTS:
+            if chunk_total > self._MAX_RESULTS and (chunk_end - chunk_start) > self._MIN_CHUNK_MS:
+                # Window still too big and still splittable in time — recurse.
                 sub_findings = self._chunked_fetch(
                     chunk_filters, chunk_ops, chunk_start, chunk_end, chunk_total, page_size,
                 )
-                for f in sub_findings:
-                    fid = f.get("id")
-                    if fid not in seen_ids:
-                        seen_ids.add(fid)
-                        all_findings.append(f)
+            elif chunk_total > self._MAX_RESULTS:
+                # Window can't be split further in time — fall back to severity.
+                sub_findings = self._severity_fetch(chunk_filters, chunk_ops, page_size)
             else:
-                chunk_findings = self._paginated_fetch(chunk_filters, chunk_ops, page_size)
-                for f in chunk_findings:
-                    fid = f.get("id")
-                    if fid not in seen_ids:
-                        seen_ids.add(fid)
-                        all_findings.append(f)
+                sub_findings = self._paginated_fetch(chunk_filters, chunk_ops, page_size)
+
+            for f in sub_findings:
+                fid = f.get("id")
+                if fid not in seen_ids:
+                    seen_ids.add(fid)
+                    all_findings.append(f)
+
+        return all_findings
+
+    def _severity_fetch(self, base_filters, base_filter_ops, page_size):
+        """Partition an un-time-splittable window by severity, one axis value
+        at a time, then dedupe by finding id.
+
+        Fallback for date windows that still exceed ``_MAX_RESULTS`` after
+        time-splitting bottoms out. Each severity is fetched separately so each
+        sub-query stays under the 10K cap. If the caller already constrained
+        severities, only that intersection is queried. A single severity that
+        *still* exceeds 10K is fetched best-effort (paginated to the cap) and a
+        warning is emitted, since no further partition axis is available here.
+        """
+        requested = base_filters.get("severities")
+        axis = [s for s in self._SEVERITY_AXIS if not requested or s in requested]
+        # Preserve any requested severities not in the known axis (defensive).
+        if requested:
+            axis += [s for s in requested if s not in self._SEVERITY_AXIS]
+
+        all_findings = []
+        seen_ids = set()
+
+        for severity in axis:
+            sev_filters = dict(base_filters)
+            sev_filters["severities"] = [severity]
+            sev_ops = dict(base_filter_ops)
+
+            sev_total = self._probe_count(sev_filters, sev_ops)
+            if sev_total > self._MAX_RESULTS:
+                warnings.warn(
+                    f"Severity '{severity}' has {sev_total} findings in a single "
+                    f"un-splittable date window, exceeding the {self._MAX_RESULTS} "
+                    "cap. No further partition axis is available; results for this "
+                    "severity are truncated at the cap.",
+                    stacklevel=2,
+                )
+
+            for f in self._paginated_fetch(sev_filters, sev_ops, page_size):
+                fid = f.get("id")
+                if fid not in seen_ids:
+                    seen_ids.add(fid)
+                    all_findings.append(f)
 
         return all_findings
 
