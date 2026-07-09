@@ -61,7 +61,7 @@ ac = ArmorCodeClient("https://app.armorcode.com", token="<bearer-token>")
 | `get_finding_stats_by_team(team_name, environments)` | Stats for a specific team |
 | `get_finding_stats_by_product(product_name, environments)` | Stats for a specific product |
 | `analyze_risk_scoring_tags(finding_age, severities, statuses=None, findings=None)` | For each tag in the tenant's `ASSET_SCORE` config, count matching findings in the age window. Returns rows of `{tag_key, tag_value, weight, count}` plus a final `(none — finding had no scoring tag)` summary row |
-| `upload_findings(findings, product, sub_product, environment)` | **Write** — insert custom findings via `POST /api/findings/upload` (Generic JSON). Returns `{scanId}` |
+| `upload_findings(findings, product, sub_product, environment)` | **Write** — insert custom findings via `POST /api/findings/upload` (Generic JSON). Returns `{scanId}`. One of **4 upload methods** — see [Uploading findings — the 4 methods](#uploading-findings--the-4-methods) |
 
 **Filter casing rules (CRITICAL):**
 - Severity in filters: title-case — `Critical`, `High`, `Medium`, `Low`, `Info`
@@ -110,6 +110,45 @@ Ruby: `ac.upload_findings(finding, product: "my-product", sub_product: "my-subpr
 `500 "No such product/sub-product/environment found"`. The returned `scanId`
 means the upload was accepted; findings surface asynchronously via the scan
 pipeline, so they may not appear in `get_findings()` immediately.
+
+### Uploading findings — the 4 methods
+
+There are four distinct ways to get findings into ArmorCode, differing by **input format** (JSON objects vs CSV vs a native scan report) and **transport** (direct POST vs presigned-S3). Only method 1 is wrapped in the SDK today; the others are called via `ac._session` until wrapped.
+
+| # | Method | Endpoint | Input | Transport | In SDK? |
+|---|--------|----------|-------|-----------|---------|
+| 1 | **Generic JSON** | `POST /api/findings/upload` | JSON array of finding objects | Direct POST | ✅ `upload_findings()` |
+| 2 | **CSV multipart** | `POST /user/findings/upload/csv` | CSV file on disk | `multipart/form-data` | ❌ |
+| 3 | **CSV → custom tool** | `POST /user/tools/generic/configurations/{tool_name}/upload` (or `POST /api/v2/findings/csv/upload`) | CSV mapped to a named custom tool config | Presigned S3 (presign → PUT) | ❌ |
+| 4 | **Native scan report** | `POST /api/v2/scans/upload/initiate` → `.../presign` → `.../complete` (legacy: `POST /api/scanUploadUrl`) | Raw scanner output (Snyk/Semgrep/Trivy/…) | Multipart presigned S3 | ❌ |
+
+**Choosing:** build findings in code → **1**. Have a normalized CSV, one-shot → **2**. CSV that should attribute to a specific custom tool with a saved field mapping (and/or large files) → **3**. Ingest a raw native scanner file and let ArmorCode parse it → **4**.
+
+**Method 1 — Generic JSON (implemented):** see `upload_findings()` above.
+
+**Method 2 — CSV multipart (not wrapped):**
+```python
+files = {"file": ("findings.csv", open("findings.csv", "rb"), "text/csv")}
+resp = ac._session.post(f"{ac.base_url}/user/findings/upload/csv", files=files)
+```
+
+**Method 3 — CSV → custom tool via presigned S3 (not wrapped).** Same presign→PUT
+pattern as the verified asset upload. Body is `ScanUploadRequest`
+(**required**: `product` id, `subProduct` id, `environment`, `fileName`; set
+`customTool: true`). The call returns `{"signedUrl": ...}`; PUT the raw CSV bytes
+to that URL (no auth header — the signature is in the URL). Column separators are
+always commas; the mapping's field delimiter (`;` or `|`) only splits multi-value
+*cells*. Existing sandbox custom-tool config to target: `custom-SCA-Sample-Findings`
+(id 1001, toolType SCA).
+
+**Method 4 — native scan report (not wrapped):** three-step multipart-to-S3:
+`initiate` (query params `toolName`, `totalParts`) → `presign` per part → `complete`.
+
+> **Verified end-to-end (2026-07):** the presign→PUT idiom is confirmed working via
+> the sibling **asset** upload `POST /api/v2/assets/upload` → `{"signedUrl": ...}` →
+> `PUT` CSV → async ingest (0 → 100 assets on JulianSandbox). Methods 2–4 for findings
+> follow the same shapes but have not each been run end-to-end; verify on JulianSandbox
+> before customer use.
 
 ---
 

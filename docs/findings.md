@@ -64,6 +64,62 @@ findings = ac.get_findings(
 
 > **Note:** ArmorCode's `totalElements` can be higher than records actually returned — this is an API-side discrepancy, not data loss.
 
+## Two Findings Endpoints — `/user/findings/` vs `/api/findings`
+
+There are **two** findings endpoints with different pagination models and different filter conventions. `get_findings()` uses `/user/findings/`. For bulk export past 10K, `/api/findings` (cursor) is the better path.
+
+| Approach | Result |
+|----------|--------|
+| `/user/findings/` + `page`/`size` | ❌ **Broken for bulk** — `page` and `size` params are ignored; every page returns the same first ~10 rows. This is where a "10K limit" *would* bite, but you can't even walk that deep. Fine for reading `totalElements` (a count) only. |
+| `/api/findings` + `?afterKey=` cursor | ✅ **Correct bulk-export path.** Verified live crossing 12,000 records (Anaplan): 0 dups, 0 errors. Keyset cursor has **no 10K offset limit** — offset-based limits don't apply. |
+| CVE filter key | ✅ `cve` (list). ❌ `cveId` is **silently ignored** and returns the entire unfiltered tenant (matched 8.67M on Anaplan). Use `cve` on both endpoints. |
+
+> **Correction to older notes:** the CVE key is **not** tenant-dependent (`cveId` vs `cve` by tenant was wrong — all tenants share `app.armorcode.com`). Use `cve` everywhere. `cveId` is a silent no-op.
+
+### `/api/findings` request/response shape
+
+- **Pagination:** cursor via the **query param** `?afterKey=<value>`. Read `data.afterKey` from each response and pass it back on the next call. Body fields `afterKey`/`after`/`searchAfter` are **silently ignored** — it must be the query param.
+- **Response:** `data.findings` (list) + `data.afterKey` (cursor). Loop until `findings` is empty or `afterKey` stops advancing.
+- **Page size is fixed at 10** regardless of `maxSize`/`size`. A large pull = many round-trips (12K ≈ 1,200 requests). Parallelise by chunking on `severity`/date for **throughput**, not to dodge a limit.
+- **All filter values must be JSON arrays.** A scalar (bare string/int) returns `HTTP 400: Cannot deserialize value of type ArrayList<Object> from String/Integer`.
+
+### `/api/findings` filters (verified live on Anaplan)
+
+Filters go under `filters`, **singular** keys, values as arrays:
+
+| Filter | Format | Verified |
+|--------|--------|----------|
+| `severity` | title-case list | ✅ `["Critical","High"]` — bad value → 0 |
+| `status` | uppercase list | ✅ `["OPEN","CONFIRMED","TRIAGE","IN_PROGRESS"]` |
+| `cve` | list | ✅ `["CVE-2026-53492"]` — narrowed 8.67M → 4,016 |
+| **date range** | `[startMs, endMs]` list | ✅ honored on `createdAt`, `lastUpdated`, `publishedDate`, `lastSeenDate`, `lastModifiedDate`. Wide window = full set; future/past window = 0. **No `filterOperations` object** — that 400s here (unlike `/user/findings/`); the two-element array *is* the range. |
+
+```python
+# /api/findings cursor walk — bulk export past 10K, no chunking needed
+def iter_api_findings(ac, filters, page_hint=100):
+    after = None
+    while True:
+        params = f"?afterKey={after}" if after is not None else ""
+        resp = ac._post(f"/api/findings{params}", {"filters": filters, "maxSize": page_hint})
+        data = resp.get("data", {})
+        rows = data.get("findings", [])
+        if not rows:
+            return
+        yield from rows
+        nxt = data.get("afterKey")
+        if nxt is None or nxt == after:
+            return
+        after = nxt
+
+# CVE + severity + a 2024 date window (epoch ms arrays)
+for f in iter_api_findings(ac, {
+    "cve": ["CVE-2026-53492"],
+    "severity": ["Critical", "High"],
+    "createdAt": [1704067200000, 1735689599000],
+}):
+    ...
+```
+
 ## Page Size
 
 The `size` param controls results per API page (default: 2000, max: 10000). Larger pages reduce API calls but increase per-request latency. 2000–3000 is the practical sweet spot.
@@ -149,6 +205,38 @@ A `ValueError` is raised if a name can't be resolved to a unique engagement.
 > **Note:** the filter key is `armorcodeProjects` (plural). `armorcodeProject`, `engagement`, and `project` are silently ignored by the API.
 
 > **Status/severity key quirk:** alongside `armorcodeProjects` the API honours the **singular** `status` / `severity` keys — the plural `statuses` / `severities` (used with the hierarchy filters) are silently ignored here. Status values must be UPPERCASE, severity values Title-case. The SDK sends the singular keys and normalises casing, so `statuses=["open"]` and `severities=["MEDIUM"]` both work. Findings with a resolved status (e.g. `FALSEPOSITIVE`) stay tagged to the engagement, so an unfiltered call returns them — pass `statuses` to match the UI's active-only view.
+
+## Bulk Tagging Findings (write)
+
+`PUT /user/findings/findingTags`. SDK method exists — `update_finding_tags(finding_ids, tags, update_type)` — **but its docstring is wrong, see below.**
+
+```python
+resp = ac.update_finding_tags(
+    finding_ids=["15128178363", "15128178362"],
+    tags=["mykey:myvalue"],  # key:value format
+)
+```
+
+> ⚠️ **SDK docstring is stale/incorrect.** `update_finding_tags()` claims `update_type` accepts `"ADD"` (default) / `"REMOVE"` / `"REPLACE"`. Live-tested against `app.armorcode.com`: **`"ADD"` returns `400 Bad Request: "Invalid value 'ADD' in the request"`.** The API's actual (OpenAPI-declared) enum for this field is `RULE_BASED` / `TAG_BASED` — an unrelated axis, not an add/replace toggle. `TAG_BASED` returns `200` but does **not** append a tag to a finding's existing tag list either (tested). Omitting `updateType` entirely (as the raw endpoint call below does) is the only mode verified to actually write tags. Don't trust the docstring's semantics until someone finds the real add-without-overwrite mechanism (if one exists) — file a fix in `client.py` when found.
+
+```python
+# What's actually verified to work — no updateType field at all:
+resp = ac._session.put(
+    f"{ac.base_url}/user/findings/findingTags",
+    json={
+        "findingIds": ["15128178363", "15128178362"],  # strings, not ints
+        "findingTags": ["mykey:myvalue"],                 # key:value format
+        "scope": "FINDING",
+    },
+    timeout=ac._timeout,
+)
+```
+
+| Aspect | Verified behavior |
+|--------|--------------------|
+| Batch size | ✅ **15,000 finding IDs in one call** succeeded (`200 OK`, no rate-limit, no truncation) against a live 50,031-finding set (Julian Sandbox). No `maxItems` declared in the OpenAPI schema for this endpoint (contrast with `POST /api/v2/findings/tags/bulk`'s `HeterogeneousBulkTagUpdateRequest`, capped at `maxItems: 10000`). Untested above 15,000 — real ceiling unknown. |
+| Semantics | ⚠️ **Overwrites, not appends — confirmed, and no working add-only mode found yet** (see docstring warning above). Tagging the same 50,031 findings with `messi:wins`, then `test:5000`, then `test:15000` (each a separate full-coverage call, no `updateType` sent) left **only** `test:15000` present afterward on every finding — the two earlier custom tags were gone. Tool-native tags (`snyk`, `superowner:...`) were untouched throughout, so it's specifically the custom-tag layer managed via this endpoint that gets replaced per call, not a wholesale wipe. **Workaround:** fetch each finding's current `tags` first and include them alongside the new tag in `findingTags` so the "overwrite" preserves what you want kept. |
+| Verifying a bulk write | ❌ Don't trust `totalElements` from a `POST /user/findings/` call filtered on `filters.tags` — it undercounted by 3–6% in testing even though every finding actually had the tag. ✅ Fetch the findings themselves (`get_findings()` / cursor walk) and check each one's `tags` array directly. |
 
 ## Example — Vulnerabilities by Repo
 
