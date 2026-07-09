@@ -209,17 +209,34 @@ class ArmorCodeClient:
         return resp.json().get("totalElements", 0)
 
     def _paginated_fetch(self, filters, filter_ops, page_size):
-        """Standard paginated fetch (under 10K results)."""
+        """Standard paginated fetch, hard-capped at the API's offset ceiling.
+
+        The findings API rejects any page whose offset (``page * size``) reaches
+        ``_MAX_RESULTS`` with a 400. Callers are expected to have partitioned the
+        query below that cap (see :meth:`_chunked_fetch` / :meth:`_severity_fetch`),
+        but as a safety net this method never requests a page past the ceiling —
+        it stops and returns what it has rather than letting the API 400. When a
+        query legitimately exceeds the cap and can't be partitioned further, this
+        means results are truncated at ``_MAX_RESULTS`` (the caller warns).
+        """
         url = f"{self.base_url}/user/findings/"
         all_findings = []
         page = 0
 
         while True:
+            # Never request a page whose starting offset would hit the API's
+            # hard cap — that returns a 400. Also clamp size so the final page
+            # doesn't cross the ceiling.
+            offset = page * page_size
+            if offset >= self._MAX_RESULTS:
+                break
+            size = min(page_size, self._MAX_RESULTS - offset)
+
             body = {
                 "filters": filters,
                 "filterOperations": filter_ops,
                 "page": page,
-                "size": page_size,
+                "size": size,
                 "sortColumn": "foundOn",
                 "sortOrder": "DESC",
             }
@@ -1387,6 +1404,180 @@ class ArmorCodeClient:
         }
 
     # ------------------------------------------------------------------
+    # Azure Boards
+    # ------------------------------------------------------------------
+    #
+    # Azure Boards is one of several ticket systems ArmorCode integrates
+    # with via the generic ticketing endpoints (``ticketSystem=AZURE_BOARD``,
+    # the same family Jira/ServiceNow/etc. use under the ``/api/v2/tickets``
+    # and legacy ``/user/tickets/jira`` paths). There is no dedicated
+    # "azure boards" API — these methods just pin ``ticketSystem`` for you.
+
+    TICKET_SYSTEM_AZURE_BOARD = "AZURE_BOARD"
+
+    def get_azure_board_login_configs(self):
+        """List Azure Boards login (connection) configurations for this tenant.
+
+        A login config represents one connected Azure DevOps organization
+        (org URL + PAT). Each login can have one or more project-level
+        :meth:`get_azure_board_configs` tied to it via ``loginId``.
+
+        Returns:
+            list[dict]: Login configs with ``id``, ``name``, ``url``
+            (Azure DevOps org URL), ``organisation``, ``userName``,
+            ``loginType`` (``TOKEN``/``OAUTH2``/``BASIC``), ``configCount``.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/v2/tickets/configuration/login/{self.TICKET_SYSTEM_AZURE_BOARD}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        return body.get("data", body) if isinstance(body, dict) else body
+
+    def create_azure_board_login_config(self, name, url, token, *, user_name=None, extra=None):
+        """Connect a new Azure DevOps organization to this tenant.
+
+        Args:
+            name: Display name for this connection.
+            url: Azure DevOps organization URL (e.g. ``https://dev.azure.com/myorg``).
+            token: Azure DevOps Personal Access Token (PAT).
+            user_name: Optional username, required for some auth setups.
+            extra: Optional dict merged into the request body (escape hatch
+                   for fields like ``loginType``/``userType`` not yet
+                   surfaced as named params).
+
+        Returns:
+            dict: The created login config (``TicketLoginConfigCreateResponse``).
+        """
+        body = {
+            "name": name,
+            "url": url,
+            "apiToken": token,
+            "userName": user_name,
+        }
+        if extra:
+            body.update(extra)
+        resp = self._session.post(
+            f"{self.base_url}/api/v2/tickets/configuration/login/{self.TICKET_SYSTEM_AZURE_BOARD}",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        return result.get("data", result) if isinstance(result, dict) else result
+
+    def get_azure_board_configs(self, *, product=None, sub_product=None, login_id=None):
+        """List Azure Boards project configurations (product/sub-product mappings).
+
+        Product and sub-product can be passed as names (resolved to IDs
+        internally) or as integer IDs directly.
+
+        Args:
+            product: Product name (str) or id (int) to filter by.
+            sub_product: Sub-product name (str) or id (int) to filter by.
+            login_id: Restrict to configs under a specific
+                      :meth:`get_azure_board_login_configs` connection.
+
+        Returns:
+            list[dict]: Azure Boards configs (``JiraConfigurationDto`` shape
+            — shared schema across all ticket systems), each with
+            ``projectKey``, ``enabled``, ``product``, ``subProductIds``.
+        """
+        params = {"ticketSystem": self.TICKET_SYSTEM_AZURE_BOARD}
+
+        if product is not None:
+            params["product"] = self._lookup_product_id(product) if isinstance(product, str) else product
+
+        if sub_product is not None:
+            if isinstance(sub_product, int):
+                params["subProduct"] = sub_product
+            else:
+                sps = self.get_sub_products()
+                matches = [sp for sp in sps if sp.get("name") == sub_product]
+                if not matches:
+                    raise ValueError(f"No sub-product found with name {sub_product!r}")
+                params["subProduct"] = matches[0]["id"]
+
+        if login_id is not None:
+            params["loginId"] = login_id
+
+        resp = self._session.get(
+            f"{self.base_url}/api/v2/tickets/configuration",
+            params=params,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        return body.get("data", body) if isinstance(body, dict) else body
+
+    def get_azure_board_projects(self, login_id, *, name=None, organisation=None, page=0, size=100):
+        """List Azure DevOps projects visible to a connected login.
+
+        Used to discover valid project names before wiring up
+        :meth:`get_azure_board_configs` for a product/sub-product.
+
+        Args:
+            login_id: Login config id from :meth:`get_azure_board_login_configs`.
+            name: Optional substring filter on project name.
+            organisation: Optional Azure DevOps organisation name filter.
+            page: Page number (0-based, default 0).
+            size: Page size (default 100).
+
+        Returns:
+            list[dict]: ``{"name": ..., "id": ...}`` pairs (``NameIdPair``).
+        """
+        body = {"loginId": login_id, "ticketSystem": self.TICKET_SYSTEM_AZURE_BOARD}
+        params = {"page.page": page, "page.size": size}
+        if name is not None:
+            params["name"] = name
+        if organisation is not None:
+            params["organisation"] = organisation
+
+        resp = self._session.post(
+            f"{self.base_url}/api/v2/tickets/projects",
+            params=params,
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        return result.get("data", result) if isinstance(result, dict) else result
+
+    def get_azure_board_tickets(self, *, product=None, sub_product=None, assignee=None, page=0, size=100):
+        """Retrieve tickets created in Azure Boards, optionally filtered.
+
+        Thin wrapper over :meth:`get_tickets` — Azure Boards tickets are
+        returned from the same tenant-wide ``/api/v2/tickets`` endpoint and
+        distinguished by ``ticketSystem: "AZURE_BOARD"`` on each record, so
+        this filters the shared result rather than calling a separate
+        endpoint.
+
+        Args:
+            product: Product name (str) or id (int) to filter by.
+            sub_product: Sub-product name (str) or id (int) to filter by.
+            assignee: Assignee display name (str) to filter by.
+            page: Page number (0-based, default 0).
+            size: Page size (default 100).
+
+        Returns:
+            dict: ``{"tickets": [...], "totalElements": int, "totalPages": int}``
+            — ``tickets`` limited to those with ``ticketSystem == "AZURE_BOARD"``.
+        """
+        result = self.get_tickets(
+            product=product, sub_product=sub_product, assignee=assignee, page=page, size=size,
+        )
+        azure_tickets = [
+            t for t in result["tickets"]
+            if t.get("ticketSystem") == self.TICKET_SYSTEM_AZURE_BOARD
+        ]
+        return {
+            "tickets": azure_tickets,
+            "totalElements": result["totalElements"],
+            "totalPages": result["totalPages"],
+        }
+
+    # ------------------------------------------------------------------
     # Users
     # ------------------------------------------------------------------
 
@@ -1838,6 +2029,52 @@ class ArmorCodeClient:
         """
         resp = self._session.get(
             f"{self.base_url}/user/tools/integration-tools/status",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def create_custom_tool_configuration(self, name, field_mapping, tool_type, *, extra=None):
+        """Create a custom tool field mapping configuration.
+
+        Used to define how columns in a custom (non-native) findings feed
+        (e.g. a CSV upload) map onto ArmorCode's standard finding fields.
+
+        Args:
+            name: Display name for the configuration. The API requires this
+                  to start with the literal prefix ``custom-`` — a name
+                  without it is auto-prefixed here, and the API returns
+                  ``400 Bad Request: "Name must start with custom-"`` if a
+                  raw call is made bypassing that.
+            field_mapping: Dict keyed by ArmorCode field (e.g. ``SEVERITY``,
+                  ``CVE``, ``COMPONENT_NAME`` — note the API's own typo
+                  ``TOOl_CATEGORY``), each value a dict with
+                  ``customFieldName`` (source column name, ``""`` if unused),
+                  ``isDedupField`` (bool), and optionally ``otherProperties``.
+            tool_type: List of tool type strings, e.g. ``["SCA"]``.
+            extra: Optional dict merged into the request body (escape hatch
+                   for fields like ``dateFormat`` not yet surfaced as named
+                   params).
+
+        Returns:
+            dict: The created configuration, including server-assigned
+            ``id``, ``tenant``, ``isPublished``/``published``, timestamps,
+            and the echoed ``fieldMapping``.
+        """
+        if not name.startswith("custom-"):
+            name = f"custom-{name}"
+
+        body = {
+            "name": name,
+            "fieldMapping": field_mapping,
+            "toolType": tool_type,
+        }
+        if extra:
+            body.update(extra)
+
+        resp = self._session.post(
+            f"{self.base_url}/user/tools/custom/configurations",
+            json=body,
             timeout=self._timeout,
         )
         resp.raise_for_status()
@@ -2301,17 +2538,37 @@ class ArmorCodeClient:
         """
         return self._bulk_finding_action("assign-owner", finding_ids, {"ownerId": owner_id})
 
-    def update_finding_tags(self, finding_ids, tags, update_type="ADD"):
+    def update_finding_tags(self, finding_ids, tags, update_type=None):
         """Update tags on a set of findings.
 
         Hits ``PUT /user/findings/findingTags``. Tags are a flat list of
-        ``"key:value"`` strings. The ``update_type`` controls whether the
-        provided tags are added to, removed from, or replace the existing set.
+        ``"key:value"`` strings.
+
+        .. warning::
+            This call **overwrites** the custom-tag set on each finding
+            rather than appending to it — confirmed by direct re-fetch after
+            sequential calls with different tags. Tool-native tags (e.g.
+            ``snyk``, ``superowner:...``) are left alone, but any tag applied
+            via a prior call to this endpoint is gone after the next one. To
+            add a tag without losing existing ones, fetch each finding's
+            current ``tags`` first and pass the union in ``tags``.
+
+            ``update_type`` previously defaulted to ``"ADD"`` here, implying
+            add/remove/replace semantics — that was **wrong** and always
+            returned ``400 Bad Request: "Invalid value 'ADD' in the
+            request"`` when sent. The API's real (OpenAPI-declared) enum for
+            this field is ``RULE_BASED`` / ``TAG_BASED``, an unrelated axis;
+            ``TAG_BASED`` returns 200 but does not change the overwrite
+            behavior above. Leave ``update_type`` as ``None`` (omitted from
+            the request body) unless you have verified what a specific enum
+            value does — that is the only mode confirmed to actually write
+            tags, verified at 15,000 finding IDs in a single call.
 
         Args:
             finding_ids: List of finding IDs (int).
             tags: List of tag strings, e.g. ``["env:prod", "team:security"]``.
-            update_type: ``"ADD"`` (default), ``"REMOVE"``, or ``"REPLACE"``.
+            update_type: Omit (default). If set, must be ``"RULE_BASED"`` or
+                ``"TAG_BASED"`` — untested/uncharacterized effect either way.
 
         Returns:
             dict or None: API response body.
@@ -2319,8 +2576,9 @@ class ArmorCodeClient:
         body = {
             "findingIds": list(finding_ids),
             "findingTags": list(tags),
-            "updateType": update_type,
         }
+        if update_type is not None:
+            body["updateType"] = update_type
         resp = self._session.put(
             f"{self.base_url}/user/findings/findingTags",
             json=body,

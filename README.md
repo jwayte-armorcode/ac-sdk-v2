@@ -44,6 +44,30 @@ Both SDKs share the same method names, parameter conventions, and env file forma
        print(f"{repo}: {count}")
    ```
 
+### Uploading Findings
+
+There are **four ways** to upload findings, by input format and transport:
+
+| # | Method | Endpoint | Input | In SDK? |
+|---|--------|----------|-------|---------|
+| 1 | Generic JSON | `POST /api/findings/upload` | JSON array of finding objects | ✅ `upload_findings()` |
+| 2 | CSV multipart | `POST /user/findings/upload/csv` | CSV file (multipart) | ❌ |
+| 3 | CSV → custom tool | `POST /user/tools/generic/configurations/{tool_name}/upload` | CSV mapped to a named tool config (presigned S3) | ❌ |
+| 4 | Native scan report | `POST /api/v2/scans/upload/initiate` → `presign` → `complete` | Raw scanner output (multipart S3) | ❌ |
+
+Method 1 is wrapped today:
+
+```python
+ac.upload_findings(
+    {"Title": "Hardcoded secret", "Severity": "High", "Description": "...",
+     "ToolFindingId": "unique-id-001", "Category": "SECURITY"},
+    product="my-product", sub_product="my-subproduct", environment="Production",
+)
+# -> {"scanId": ...}   # ingest is async
+```
+
+See **[docs/uploading-findings.md](docs/uploading-findings.md)** for all four methods with request shapes and code samples.
+
 ---
 
 ## Ruby
@@ -102,5 +126,6 @@ API_TOKEN=<api-token>
 
 - **[docs/methods.md](docs/methods.md)** — complete method reference, grouped by resource
 - **[docs/findings.md](docs/findings.md)** — finding filters, filter cheatsheet, 10K limit & auto-chunking
+- **[docs/uploading-findings.md](docs/uploading-findings.md)** — the four findings-upload methods (JSON, CSV multipart, CSV → custom tool, native scan report)
 - **[examples/demo.py](examples/demo.py)** — Python demo script
 - **[ruby/examples/demo.rb](ruby/examples/demo.rb)** — Ruby demo script
