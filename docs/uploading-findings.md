@@ -114,4 +114,17 @@ init = ac._session.post(
 
 ## Verification status
 
-The presign → PUT → async-ingest pattern is **verified end-to-end** via the sibling asset upload `POST /api/v2/assets/upload` → `{"signedUrl": ...}` → `PUT` CSV → ingest (0 → 100 assets on JulianSandbox, 2026-07). Methods 2–4 for findings share the same request shapes (pulled from the live OpenAPI spec) but have not each been driven end-to-end. **Verify on JulianSandbox before any customer use.**
+**All four methods verified end-to-end on JulianSandbox (2026-07):**
+
+| Method | Result |
+|--------|--------|
+| 1. Generic JSON | ✅ `{"scanId": ...}` |
+| 2. CSV multipart | ✅ HTTP 200 "File uploaded successfully" |
+| 3. CSV → custom tool (`custom-SCA-Sample-Findings`) | ✅ presign 200 + S3 PUT 200 |
+| 4. Native scan report (initiate) | ✅ HTTP 200 + `uploadId` |
+
+Runnable examples for all four: **`examples/upload_findings.py`**.
+
+Two gotchas the testing surfaced:
+- **Method 2** must NOT send `Content-Type: application/json` — the client session pins that header, which breaks the multipart boundary (HTTP 415). Send only the auth header and let `requests` set the multipart content-type (see the example).
+- **Method 4** `toolName` must be a **native** ArmorCode scanner (Snyk, Trivy, Semgrep, SonarQube, Dependabot all accepted) — a custom tool name is rejected with `400 "Custom tool is not supported yet"`.
