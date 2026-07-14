@@ -9,6 +9,66 @@ from pathlib import Path
 import requests
 
 
+class _ThrottledRetrySession(requests.Session):
+    """A ``requests.Session`` that paces requests and retries on throttling.
+
+    Two protections, applied transparently to every ``get``/``post``/``put``/
+    ``delete`` so no call site needs to change:
+
+    1. **Proactive throttle** — enforces a minimum gap between requests
+       (``min_interval`` seconds) so a tight loop never bursts past the
+       tenant's per-second budget in the first place.
+    2. **Reactive retry** — on ``429`` (rate limited) or ``5xx`` (transient
+       server error), waits and retries with exponential backoff, honoring the
+       server's ``Retry-After`` header when present. Any other status (incl.
+       4xx like 400/401/403) is returned immediately for the caller's
+       ``raise_for_status()`` to handle — those aren't worth retrying.
+
+    The ArmorCode findings API in particular will 429 under sustained bulk
+    pulls; without this, a single 429 raises straight out of the SDK. Callers
+    only ever see a final, non-retryable response.
+    """
+
+    def __init__(self, *args, min_interval=0.0, max_retries=8,
+                 backoff_base=2.0, backoff_cap=60.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._min_interval = min_interval
+        self._max_retries = max_retries
+        self._backoff_base = backoff_base
+        self._backoff_cap = backoff_cap
+        self._last_request_ts = 0.0
+
+    def _sleep_to_throttle(self):
+        if self._min_interval <= 0:
+            return
+        elapsed = time.monotonic() - self._last_request_ts
+        wait = self._min_interval - elapsed
+        if wait > 0:
+            time.sleep(wait)
+
+    def request(self, method, url, **kwargs):
+        delay = self._backoff_base
+        last_resp = None
+        for attempt in range(self._max_retries + 1):
+            self._sleep_to_throttle()
+            self._last_request_ts = time.monotonic()
+            resp = super().request(method, url, **kwargs)
+            if resp.status_code != 429 and resp.status_code < 500:
+                return resp
+            last_resp = resp
+            if attempt >= self._max_retries:
+                break
+            # Prefer the server's Retry-After (seconds) when it sends one.
+            retry_after = resp.headers.get("Retry-After")
+            if retry_after and str(retry_after).isdigit():
+                wait = float(retry_after)
+            else:
+                wait = delay
+                delay = min(delay * 2, self._backoff_cap)
+            time.sleep(min(wait, self._backoff_cap))
+        return last_resp
+
+
 class AzureBoardMappingConflict(Exception):
     """Raised when creating an Azure Boards mapping would double-map a repo.
 
@@ -73,9 +133,27 @@ class ArmorCodeClient:
         "MITIGATED", "SUPPRESSED", "TRIAGE", "IN_PROGRESS", "CONTROLLED",
     )
 
-    def __init__(self, tenant_url, token, *, timeout=60):
+    def __init__(self, tenant_url, token, *, timeout=60,
+                 min_request_interval=0.0, max_retries=8):
+        """Create an ArmorCode API client.
+
+        Args:
+            tenant_url: Tenant hostname (``app.armorcode.com``) or full URL.
+            token: API bearer token.
+            timeout: Per-request timeout in seconds.
+            min_request_interval: Minimum gap (seconds) enforced between
+                requests as a proactive throttle. ``0`` (default) disables
+                pacing and relies on reactive retry alone; set e.g. ``0.1`` to
+                cap at ~10 req/s during heavy bulk pulls to avoid tripping the
+                tenant's rate limit in the first place.
+            max_retries: How many times to retry a ``429``/``5xx`` response with
+                exponential backoff (honoring ``Retry-After``) before giving up.
+        """
         self.base_url = f"https://{tenant_url.rstrip('/')}"
-        self._session = requests.Session()
+        self._session = _ThrottledRetrySession(
+            min_interval=min_request_interval,
+            max_retries=max_retries,
+        )
         self._session.headers.update({
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
