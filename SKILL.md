@@ -244,20 +244,22 @@ Azure Boards rides the shared ticketing endpoints with `ticketSystemType="AZURE_
 ```python
 from armorcode import AzureBoardMappingConflict
 try:
-    ac.create_azure_board_config("Delinea.Work", login_id=43917,
+    ac.create_azure_board_config("MyProject", login_id=12345,
                                  repos=["My.Repo", "Other.Repo"],
-                                 issue_type="Bug", product="Cybersecurity")
+                                 issue_type="Bug", product="My Application")
 except AzureBoardMappingConflict as e:
     for c in e.conflicts:
         print(c["id"], c["application"], c["repos"])  # already-mapped repos
 ```
+
+Conflict reporting reads the offending mapping's application/repo **names** straight off the config's own `productNameId` / `subProductNameIds` (id+name pairs) — deliberately **not** via `get_products()`, which is a single page and omits many product ids (see gotcha below).
 
 ---
 
 ## Gotchas
 
 - `get_repos()` response is wrapped in a `data` envelope — SDK unwraps automatically.
-- `get_products()` uses `pageNumber`/`pageSize` params internally (not `page`/`size`).
+- `get_products()` uses `pageNumber`/`pageSize` params internally (not `page`/`size`). It returns **one page only** (max 100) and does **not** surface every product in the tenant — some product ids referenced elsewhere (e.g. in ticket configs) are absent from the listing entirely. Don't rely on it as a complete id→name map; resolve names from the object that already carries them (e.g. a config's `productNameId`) or search by exact name.
 - `get_team_stats()` requires `environment` param or returns 400.
 - `get_team_sla_stats()` requires `aggFields` (default `["teamId"]`) or returns 400.
 - `totalElements` from the findings API can be higher than actual returned records (API-side discrepancy).
