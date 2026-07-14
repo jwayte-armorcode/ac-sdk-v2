@@ -48,6 +48,24 @@ ac = ArmorCodeClient.from_env("env")
 ac = ArmorCodeClient("https://app.armorcode.com", token="<bearer-token>")
 ```
 
+**Rate limiting / throttling (built in):** Every request goes through a session
+that automatically **retries `429` (rate limited) and `5xx` responses** with
+exponential backoff, honoring the server's `Retry-After` header. Non-retryable
+statuses (400/401/403/404…) return immediately for `raise_for_status()`. This
+means a single 429 during a large bulk pull no longer crashes the run.
+
+For sustained heavy pulls you can also enable a **proactive throttle** so you
+never trip the limit in the first place:
+
+```python
+# cap at ~10 req/s and allow up to 10 retries per request
+ac = ArmorCodeClient.from_env("env", min_request_interval=0.1, max_retries=10)
+```
+
+`min_request_interval=0` (default) relies on reactive retry alone. When running
+your own long-running scripts, also avoid pointing a second querying process at
+the same tenant concurrently — they share the tenant's rate budget.
+
 ---
 
 ## Findings Methods
