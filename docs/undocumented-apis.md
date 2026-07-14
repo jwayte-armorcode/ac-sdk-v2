@@ -23,7 +23,7 @@ resp.raise_for_status()
 
 | Area | Endpoints | Status |
 |------|-----------|--------|
-| [Ticketing — Azure Boards mappings](#ticketing--azure-boards-mappings) | `/user/tickets/jira/*` CRUD | Verified from UI (Delinea, 2026-07) |
+| [Ticketing — Azure Boards mappings](#ticketing--azure-boards-mappings) | `/user/tickets/jira/*` CRUD | Verified from UI network captures, 2026-07 |
 
 ---
 
@@ -69,7 +69,7 @@ Azure DevOps organization (org URL + PAT). List them with the SDK:
 ```python
 for c in ac.get_azure_board_login_configs():
     print(c["id"], c["name"], c["organisation"], f'({c["configCount"]} mappings)')
-# 43917 Boards thycotic (53 mappings)
+# 12345 Boards my-org (53 mappings)
 ```
 
 ### Step 1 — load the form (project + field metadata)
@@ -80,7 +80,7 @@ their available fields (with `allowedValues` trees) for the chosen connection:
 ```python
 resp = ac._session.post(
     f"{ac.base_url}/user/tickets/jira/projects",
-    json={"loginConfigId": 43917},
+    json={"loginConfigId": 12345},
 )
 resp.raise_for_status()
 projects = resp.json()   # projects + field metadata used to populate the form
@@ -96,13 +96,13 @@ Verified example (a **GLOBAL** / tenant-wide mapping):
 
 ```python
 body = {
-    "projectKey": "Thycotic.FeatureRequests",
-    "issueType": "Product Backlog Item",           # free-form, per project
-    "loginConfigId": 43917,
+    "projectKey": "MyProject",
+    "issueType": "Bug",                            # free-form, per project
+    "loginConfigId": 12345,
     "ticketSystemType": "AZURE_BOARD",
     "configurationType": "GLOBAL",                 # GLOBAL | PRODUCT | SUBPRODUCT
-    "ticketUnifiedSingleTemplateId": 351708,       # ticket-description templates
-    "ticketUnifiedMultipleTemplateId": 351709,
+    "ticketUnifiedSingleTemplateId": 1001,         # ticket-description templates
+    "ticketUnifiedMultipleTemplateId": 1002,
     "labels": ["Armorcode_Associated_Finding"],
 
     # --- severity -> Azure priority ---
@@ -115,9 +115,8 @@ body = {
     },
 
     # --- field defaults sent BOTH as flat keys AND in customFields[] (see gotchas) ---
-    "/fields/System.AreaPath": "\\Thycotic.FeatureRequests\\UX Secret Server",
-    "/fields/System.IterationPath": "\\Thycotic.FeatureRequests\\UX Secret Server",
-    "/fields/ThycoticScrum.Product": "Architecture",
+    "/fields/System.AreaPath": "\\MyProject\\TeamArea",
+    "/fields/System.IterationPath": "\\MyProject\\TeamArea",
     "/fields/Custom.InRollingPatch": False,
     "/fields/Custom.DocsNeeded": False,
     "duedate": "${finding.resolutionDueDate}",
@@ -126,24 +125,14 @@ body = {
         {
             "key": "/fields/System.AreaPath", "name": "Area",
             "type": "select", "dataType": "string",
-            "value": "\\Thycotic.FeatureRequests\\UX Secret Server",
-            "defaultVal": "\\Thycotic.FeatureRequests\\UX Secret Server",
+            "value": "\\MyProject\\TeamArea",
+            "defaultVal": "\\MyProject\\TeamArea",
             "active": True, "isRequired": False,
             # allowedValues: nested id/name/children tree from Step 1 (trimmed here)
-            "allowedValues": [ {"id": "\\Thycotic.FeatureRequests", "name": "Thycotic.FeatureRequests",
+            "allowedValues": [ {"id": "\\MyProject", "name": "MyProject",
                 "children": None, "allowedValues": [
-                    {"id": "\\Thycotic.FeatureRequests\\UX Secret Server", "name": "UX Secret Server",
+                    {"id": "\\MyProject\\TeamArea", "name": "TeamArea",
                      "children": None, "allowedValues": None} ]} ],
-        },
-        {
-            "key": "/fields/ThycoticScrum.Product", "name": "Product",
-            "type": "select", "dataType": "string",
-            "value": "Architecture", "defaultVal": "Architecture",
-            "active": True, "isRequired": True,
-            "defaultValue": {"id": None, "name": None, "meta": {}, "otherProperties": {}},
-            # allowedValues: full flat list of product names (trimmed here)
-            "allowedValues": [{"id": "Architecture", "name": "Architecture",
-                               "children": None, "allowedValues": None}],
         },
         {
             "key": "/fields/Custom.InRollingPatch", "name": "In Rolling Patch",
@@ -163,6 +152,9 @@ body = {
             "value": "${finding.resolutionDueDate}", "defaultVal": "${finding.resolutionDueDate}",
             "active": True, "isRequired": False, "allowedValues": None,
         },
+        # NOTE: a project often also exposes org-specific select fields (e.g. a
+        # "Product" or "Source" field under a custom /fields/<Namespace>.<Field>
+        # key) — discover these from the Step 1 response; they are not fixed.
     ],
 }
 
@@ -175,11 +167,11 @@ accordingly and add `product` / `subProduct` id arrays:
 
 ```python
     "configurationType": "PRODUCT",
-    "product": [771025, 966132],
+    "product": [1111, 2222],
     # or:
     "configurationType": "SUBPRODUCT",
-    "product": [680985],
-    "subProduct": [2130703],
+    "product": [1111],
+    "subProduct": [3333],
 ```
 
 #### SDK wrapper: `create_azure_board_config()` (with repo-conflict check)
@@ -199,11 +191,11 @@ from armorcode import ArmorCodeClient, AzureBoardMappingConflict
 ac = ArmorCodeClient.from_env("env")
 try:
     cfg = ac.create_azure_board_config(
-        project_key="Delinea.Work",
-        login_id=43917,
+        project_key="MyProject",
+        login_id=12345,
         repos=["My.Repo", "Other.Repo"],   # repo = sub-product (by name)
         issue_type="Bug",
-        product="Cybersecurity",            # optional application (name or id)
+        product="My Application",           # optional application (name or id)
     )
 except AzureBoardMappingConflict as e:
     for c in e.conflicts:
@@ -226,7 +218,7 @@ config with your changes. Differences the UI shows on edit vs create:
   `{critical, high, medium, low, info}`. Those empties are optional/cosmetic.
 - each `customFields[]` entry carries a populated `defaultValue`
   (`StringNameIdPair`) reflecting the previously-saved value, e.g.
-  `{"id": "Auditing", "name": "Auditing", "meta": {}, "otherProperties": {}}`,
+  `{"id": "SomeValue", "name": "SomeValue", "meta": {}, "otherProperties": {}}`,
   where create sent `{"id": null, "name": null, ...}`.
 - only the fields currently active on the form are sent; a field left untouched
   (e.g. `System.AreaPath`) is simply absent — both its flat key and its
@@ -234,7 +226,7 @@ config with your changes. Differences the UI shows on edit vs create:
 
 ```python
 resp = ac._session.put(
-    f"{ac.base_url}/user/tickets/jira/configuration/1238346",
+    f"{ac.base_url}/user/tickets/jira/configuration/{config_id}",
     json=body,   # same shape as create
 )
 resp.raise_for_status()
@@ -244,7 +236,7 @@ resp.raise_for_status()
 
 ```python
 resp = ac._session.delete(
-    f"{ac.base_url}/user/tickets/jira/configuration/1238344"
+    f"{ac.base_url}/user/tickets/jira/configuration/{config_id}"
 )
 resp.raise_for_status()   # no request body
 ```
@@ -264,7 +256,7 @@ resp.raise_for_status()   # no request body
 - **`allowedValues` come from Step 1.** Select fields (Area Path, Iteration,
   Product) expect the nested `id/name/children/allowedValues` tree that the
   `POST /user/tickets/jira/projects` call returns. Area/Iteration values are
-  backslash-delimited paths, e.g. `\\Thycotic.FeatureRequests\\UX Secret Server`.
+  backslash-delimited paths, e.g. `\\MyProject\\TeamArea`.
 - **`issueType` is per-project free text** (e.g. `"Bug"`, `"Product Backlog Item"`).
 - **Field *keys* are project-specific — don't hardcode them.** The set of
   `customFields` (and their flat keys) is whatever the chosen Azure DevOps
@@ -272,11 +264,11 @@ resp.raise_for_status()   # no request body
   example: one project sends a bare `"duedate"` key with `type: "duedate"`,
   another sends `"/fields/Microsoft.VSTS.Scheduling.DueDate"` with
   `type: "dateTime"` — both carrying the same `${finding.resolutionDueDate}`
-  value. Likewise a project may expose extra custom fields (`Source`, `RFE`,
-  `Regression`, `Unreleased`, `InvestmentType`, `No_Code`, `ReleaseNotesNeeded`,
-  …). Build the field list from the Step 1 response, not from a fixed template.
+  value. Likewise a project may expose extra org-specific custom fields under
+  `/fields/<Namespace>.<Field>` keys (a "Product" or "Source" select, various
+  booleans, …). Build the field list from the Step 1 response, not a fixed template.
 - **Path values are single backslashes on the wire.** Area/Iteration values are
-  ADO tree paths like `\Delinea.Work\Operations\Security Team` — one backslash
+  ADO tree paths like `\MyProject\Operations\TeamArea` — one backslash
   per separator in the actual JSON. In Python source you write `\\` (escape),
   but the value sent is single-backslash-delimited.
 - **Request-side `CustomField` is richer than the read/response shape** — it adds
@@ -288,16 +280,15 @@ resp.raise_for_status()   # no request body
 
 ### Verification status
 
-Verified from live web-app network captures on the **Delinea** tenant
-(login config 43917 "Boards", org `thycotic`), 2026-07:
+Verified from live web-app network captures, 2026-07:
 
 | Action | Endpoint | Result |
 |--------|----------|--------|
 | Load form | `POST /user/tickets/jira/projects` | ✅ returns projects + field metadata |
-| Create (project `Thycotic.FeatureRequests`) | `POST /user/tickets/jira/configuration` | ✅ mapping created |
-| Create (project `Delinea.Work`) | `POST /user/tickets/jira/configuration` | ✅ mapping created — confirmed dual-representation + project-specific field keys |
-| Edit | `PUT /user/tickets/jira/configuration/1238346` | ✅ mapping updated |
-| Delete | `DELETE /user/tickets/jira/configuration/1238344` | ✅ mapping removed |
+| Create (project A) | `POST /user/tickets/jira/configuration` | ✅ mapping created |
+| Create (project B) | `POST /user/tickets/jira/configuration` | ✅ mapping created — confirmed dual-representation + project-specific field keys |
+| Edit | `PUT /user/tickets/jira/configuration/{id}` | ✅ mapping updated |
+| Delete | `DELETE /user/tickets/jira/configuration/{id}` | ✅ mapping removed |
 
 Two create captures across **different ADO projects** confirm the model is
 project-agnostic: the structural envelope (`loginConfigId`, `ticketSystemType`,
