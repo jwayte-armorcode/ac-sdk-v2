@@ -232,10 +232,25 @@ resp.raise_for_status()   # no request body
   `POST /user/tickets/jira/projects` call returns. Area/Iteration values are
   backslash-delimited paths, e.g. `\\Thycotic.FeatureRequests\\UX Secret Server`.
 - **`issueType` is per-project free text** (e.g. `"Bug"`, `"Product Backlog Item"`).
+- **Field *keys* are project-specific — don't hardcode them.** The set of
+  `customFields` (and their flat keys) is whatever the chosen Azure DevOps
+  project exposes, discovered from Step 1. The due-date field is the clearest
+  example: one project sends a bare `"duedate"` key with `type: "duedate"`,
+  another sends `"/fields/Microsoft.VSTS.Scheduling.DueDate"` with
+  `type: "dateTime"` — both carrying the same `${finding.resolutionDueDate}`
+  value. Likewise a project may expose extra custom fields (`Source`, `RFE`,
+  `Regression`, `Unreleased`, `InvestmentType`, `No_Code`, `ReleaseNotesNeeded`,
+  …). Build the field list from the Step 1 response, not from a fixed template.
+- **Path values are single backslashes on the wire.** Area/Iteration values are
+  ADO tree paths like `\Delinea.Work\Operations\Security Team` — one backslash
+  per separator in the actual JSON. In Python source you write `\\` (escape),
+  but the value sent is single-backslash-delimited.
 - **Request-side `CustomField` is richer than the read/response shape** — it adds
   `allowedValues`, `isRequired`, `level`, `nestedFields`, `originalFieldType`,
   `value`. The list/read shape (`get_azure_board_configs`) drops `allowedValues`
-  and keeps `value`/`defaultVal`.
+  and keeps `value`/`defaultVal`. Select fields carry `defaultValue` as a
+  `StringNameIdPair` (`{"id": null, "name": null, "meta": {}, "otherProperties": {}}`
+  on create); booleans and text fields set it too.
 
 ### Verification status
 
@@ -245,6 +260,13 @@ Verified from live web-app network captures on the **Delinea** tenant
 | Action | Endpoint | Result |
 |--------|----------|--------|
 | Load form | `POST /user/tickets/jira/projects` | ✅ returns projects + field metadata |
-| Create | `POST /user/tickets/jira/configuration` | ✅ mapping created |
+| Create (project `Thycotic.FeatureRequests`) | `POST /user/tickets/jira/configuration` | ✅ mapping created |
+| Create (project `Delinea.Work`) | `POST /user/tickets/jira/configuration` | ✅ mapping created — confirmed dual-representation + project-specific field keys |
 | Edit | `PUT /user/tickets/jira/configuration/1238346` | ✅ mapping updated |
 | Delete | `DELETE /user/tickets/jira/configuration/1238344` | ✅ mapping removed |
+
+Two create captures across **different ADO projects** confirm the model is
+project-agnostic: the structural envelope (`loginConfigId`, `ticketSystemType`,
+`configurationType`, `properties`, dual flat+`customFields` representation) is
+constant, while the specific field keys and `allowedValues` trees vary per
+project.
