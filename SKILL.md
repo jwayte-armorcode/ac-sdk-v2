@@ -16,6 +16,8 @@ GitHub: `https://github.com/jwayte-armorcode/ac-sdk-v2`
 
 **API reference:** The full OpenAPI spec for `app.armorcode.com` is stored at `docs/openapi.json` in the repo. Use it to look up endpoint paths, request body schemas, and available parameters. Fetch a fresh copy at any time with `ac.get_api_docs()`.
 
+**Undocumented APIs:** Some endpoints the web app relies on are not wrapped by the SDK and are documented poorly (or not at all) in the OpenAPI spec — and in several cases the UI uses a **legacy path** that differs from the documented one. These are recorded, with verified request shapes captured from live network traces, in **[docs/undocumented-apis.md](docs/undocumented-apis.md)**. Consult it before hand-rolling any write the SDK doesn't expose (currently: Azure Boards ticket-mapping create/edit/delete).
+
 ---
 
 ## Setup
@@ -221,6 +223,21 @@ always commas; the mapping's field delimiter (`;` or `|`) only splits multi-valu
 | `get_tenant_config(config_type)` | Config values (e.g. `ASSET_SCORE`) |
 | `get_api_docs()` | Fetch live OpenAPI spec (also stored in `docs/openapi.json`) |
 
+### Ticketing — Azure Boards
+
+Azure Boards rides the shared ticketing endpoints with `ticketSystemType="AZURE_BOARD"`. **Reads** are wrapped; **writes (mapping create/edit/delete) are not** — the web app performs them via the legacy `/user/tickets/jira/*` path. Full verified request shapes: **[docs/undocumented-apis.md](docs/undocumented-apis.md)**.
+
+| Method / call | Description |
+|--------|-------------|
+| `get_azure_board_login_configs()` | List connections (one per connected ADO org: url, org, `configCount`) |
+| `create_azure_board_login_config(name, url, token, ...)` | **Write** — connect a new ADO org (PAT) |
+| `get_azure_board_configs(product, sub_product, login_id)` | List mappings (product/sub-product → project) |
+| `get_azure_board_projects(login_id, name, organisation, ...)` | Discover ADO projects visible to a connection |
+| `get_azure_board_tickets(product, sub_product, assignee, ...)` | Tickets created in Azure Boards |
+| *mapping create/edit/delete* | Not wrapped — `POST` / `PUT` / `DELETE /user/tickets/jira/configuration[/{id}]` via `ac._session`; see the doc |
+
+**Mapping-write essentials** (from the doc): body is a full config object with `loginConfigId`, `projectKey`, `issueType` (free-form per project), `ticketSystemType:"AZURE_BOARD"`, `configurationType` (`GLOBAL`|`PRODUCT`|`SUBPRODUCT`; latter two add `product`/`subProduct` id arrays), `properties` (severity→priority), and `customFields[]`. Each active field's value is sent **twice** — as a flat top-level key (e.g. `"/fields/System.AreaPath"`) and inside `customFields[]`. Field keys are **project-specific** (e.g. due date is `"duedate"` on one project, `"/fields/Microsoft.VSTS.Scheduling.DueDate"` on another) — build the list from the Step-1 `POST /user/tickets/jira/projects` response, not a fixed template.
+
 ---
 
 ## Gotchas
@@ -230,3 +247,4 @@ always commas; the mapping's field delimiter (`;` or `|`) only splits multi-valu
 - `get_team_stats()` requires `environment` param or returns 400.
 - `get_team_sla_stats()` requires `aggFields` (default `["teamId"]`) or returns 400.
 - `totalElements` from the findings API can be higher than actual returned records (API-side discrepancy).
+- Azure Boards **reads** use the OpenAPI `/api/v2/tickets/*` path, but the UI's mapping **writes** use the legacy `/user/tickets/jira/*` path — use the legacy path for create/edit/delete (see [docs/undocumented-apis.md](docs/undocumented-apis.md)).
