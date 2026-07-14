@@ -54,7 +54,7 @@ ac = ArmorCodeClient("https://app.armorcode.com", token="<bearer-token>")
 
 | Method | Description |
 |--------|-------------|
-| `get_findings(severities, statuses, days_back, extra_filters, dump_path, size)` | Bulk pull with filters; auto-chunks if >10K; caches locally |
+| `get_findings(severities, statuses, days_back, extra_filters, dump_path, size, ignore_mitigated)` | Bulk pull with filters; auto-chunks if >10K; caches locally. `statuses` is sent under the API's singular `status` key. `ignore_mitigated` controls the `ignoreMitigated` flag (see note below) |
 | `list_repos(findings)` | Repo names + finding counts from cached data |
 | `get_findings_by_repo(repo_name, findings)` | Filter cached findings to one repo |
 | `dump_json(path)` | Write cached findings to JSON |
@@ -70,6 +70,18 @@ ac = ArmorCodeClient("https://app.armorcode.com", token="<bearer-token>")
 - Status in filters: uppercase — `OPEN`, `CONFIRMED`, `FALSEPOSITIVE`, `ACCEPTRISK`, `MITIGATED`, `SUPPRESSED`, `TRIAGE`, `IN_PROGRESS`, `CONTROLLED`
 - Wrong casing returns 0 results with no error.
 - Date filters: pass `days_back` as int — SDK converts to epoch-ms internally.
+- **Filter key is singular `status`** on `/user/findings/`. The plural `statuses` is silently ignored (returns the unfiltered tenant). `get_findings()` handles this — it maps the `statuses` param to the `status` key for you. Since v-fix: `get_findings()` also **warns** when a filtered query returns the same count as the unfiltered tenant, which is the tell-tale sign of an ignored filter (wrong key/casing).
+
+**UI status labels ≠ internal status enums (IMPORTANT):** The findings UI relabels two internal statuses, and not the way you'd guess:
+
+| UI label | Internal `status` enum |
+|----------|------------------------|
+| **Remediated** | **`MITIGATED`** |
+| **Mitigated** | **`CONTROLLED`** |
+
+There is **no `REMEDIATED` enum value**. To pull the findings the UI calls "Remediated", filter on `statuses=["MITIGATED"]`.
+
+**`ignoreMitigated` (the trap):** The default findings view sends `ignoreMitigated: true`, which silently excludes every `MITIGATED` finding — so a naive `statuses=["MITIGATED"]` query returns **0** even when hundreds of thousands exist. `get_findings()` now **auto-sets `ignore_mitigated=False` whenever `statuses` includes `MITIGATED`**, so remediated pulls just work. To override, pass `ignore_mitigated=True`/`False` explicitly.
 
 **10K auto-chunking:** If a query would return >10K results the SDK probes total count first, then splits the date range into chunks that each stay under the limit. Transparent to the caller.
 
@@ -81,6 +93,10 @@ findings = ac.get_findings(
 )
 for repo, count in ac.list_repos():
     print(f"{repo}: {count}")
+
+# Pull all "Remediated" (UI label) findings — i.e. internal MITIGATED.
+# ignore_mitigated is auto-set to False here so the query isn't emptied.
+remediated = ac.get_findings(statuses=["MITIGATED"], days_back=1825)
 ```
 
 ### Inserting findings (`upload_findings`)
@@ -263,4 +279,6 @@ Conflict reporting reads the offending mapping's application/repo **names** stra
 - `get_team_stats()` requires `environment` param or returns 400.
 - `get_team_sla_stats()` requires `aggFields` (default `["teamId"]`) or returns 400.
 - `totalElements` from the findings API can be higher than actual returned records (API-side discrepancy).
+- Findings filter key is singular `status`, not `statuses` — the plural is silently ignored and returns the unfiltered tenant. `get_findings()` maps it correctly and warns on the "filtered count == unfiltered count" signal.
+- UI status labels are **not** the internal enums: UI "Remediated" = internal `MITIGATED`, UI "Mitigated" = internal `CONTROLLED`; there is no `REMEDIATED` enum. And `MITIGATED` findings are hidden unless `ignoreMitigated: false` is sent — `get_findings()` auto-handles this when `statuses` includes `MITIGATED`. See the findings section above.
 - Azure Boards **reads** use the OpenAPI `/api/v2/tickets/*` path, but the UI's mapping **writes** use the legacy `/user/tickets/jira/*` path — use the legacy path for create/edit/delete (see [docs/undocumented-apis.md](docs/undocumented-apis.md)).
