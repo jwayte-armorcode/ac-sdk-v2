@@ -63,7 +63,11 @@ class ArmorCodeClient:
     # Severity values are title-case in the ArmorCode API
     SEVERITIES = ("Critical", "High", "Medium", "Low", "Info")
 
-    # Status values are uppercase
+    # Status values are uppercase. NOTE: the UI relabels two of these — the UI
+    # label "Remediated" is internal MITIGATED, and the UI label "Mitigated" is
+    # internal CONTROLLED. There is no REMEDIATED enum. MITIGATED findings are
+    # hidden by the default view (ignoreMitigated=True); pass
+    # get_findings(..., ignore_mitigated=False) to include them.
     STATUSES = (
         "OPEN", "CONFIRMED", "ACCEPTRISK", "FALSEPOSITIVE",
         "MITIGATED", "SUPPRESSED", "TRIAGE", "IN_PROGRESS", "CONTROLLED",
@@ -77,6 +81,10 @@ class ArmorCodeClient:
             "Content-Type": "application/json",
         })
         self._timeout = timeout
+
+        # Resolved ignoreMitigated flag for the current findings query; None
+        # means "use the API default". Set per-call by get_findings().
+        self._ignore_mitigated = None
 
         # Local cache populated by get_findings()
         self._findings = []
@@ -153,6 +161,7 @@ class ArmorCodeClient:
         extra_filters=None,
         dump_path=None,
         page_size=2000,
+        ignore_mitigated=None,
     ):
         """Fetch findings from ArmorCode with optional filters.
 
@@ -170,12 +179,22 @@ class ArmorCodeClient:
             severities: List of severity levels, e.g. ``["Critical", "High"]``.
                         Must be title-case.
             statuses: List of statuses, e.g. ``["OPEN", "CONFIRMED"]``.
-                      Must be uppercase.
+                      Must be uppercase. Sent under the API's singular ``status``
+                      filter key. Note the UI relabels two internal statuses: the
+                      UI's "Remediated" is internal ``MITIGATED`` and the UI's
+                      "Mitigated" is internal ``CONTROLLED``.
             days_back: Only include findings discovered in the last N days.
             extra_filters: Additional filter dict merged into the request body's
                            ``filters`` map.
             dump_path: If provided, write the raw findings JSON to this path.
             page_size: Number of findings per API page (max 500).
+            ignore_mitigated: Controls the API's ``ignoreMitigated`` flag, which
+                the default findings view sets to ``True`` — silently excluding
+                all ``MITIGATED`` (UI "Remediated") findings. Pass ``False`` to
+                include them (required to pull remediated findings). If left
+                ``None``, this method auto-sets it to ``False`` whenever
+                ``statuses`` includes ``MITIGATED`` so the query isn't silently
+                emptied; otherwise the API default applies.
 
         Returns:
             list[dict]: All matching findings.
@@ -186,9 +205,21 @@ class ArmorCodeClient:
         if severities:
             filters["severities"] = list(severities)
         if statuses:
-            filters["statuses"] = list(statuses)
+            # API filter key is singular ``status``; the plural ``statuses`` is
+            # silently ignored by /user/findings/ (returns the unfiltered set).
+            filters["status"] = list(statuses)
         if extra_filters:
             filters.update(extra_filters)
+
+        # Resolve ignoreMitigated. Default view drops MITIGATED findings, so if
+        # the caller asked for MITIGATED and didn't set the flag, turn it off
+        # for them — otherwise the query silently returns 0.
+        if ignore_mitigated is None:
+            wants_mitigated = statuses and any(
+                str(s).upper() == "MITIGATED" for s in statuses
+            )
+            ignore_mitigated = False if wants_mitigated else None
+        self._ignore_mitigated = ignore_mitigated
 
         now_ms = int(time.time() * 1000)
         effective_days = days_back if days_back is not None else 365
@@ -200,6 +231,20 @@ class ArmorCodeClient:
 
         # Probe total count first
         total = self._probe_count(filters, filter_ops)
+
+        # Detect a silently-ignored filter: if a filtered query returns the same
+        # count as the fully-unfiltered tenant, the filter had no effect (wrong
+        # key or wrong casing). Warn rather than silently returning everything.
+        if filters:
+            baseline = self._probe_count({}, {})
+            if total == baseline and baseline > 0:
+                warnings.warn(
+                    "get_findings: filtered query returned the same count as the "
+                    f"unfiltered tenant ({total}). The filter was likely ignored "
+                    "(wrong key/casing). Check filter keys — status must be a "
+                    "recognized enum value; severities must be title-case.",
+                    stacklevel=2,
+                )
 
         if total <= self._MAX_RESULTS:
             all_findings = self._paginated_fetch(filters, filter_ops, page_size)
@@ -213,6 +258,7 @@ class ArmorCodeClient:
             "severities": severities,
             "statuses": statuses,
             "days_back": days_back,
+            "ignore_mitigated": ignore_mitigated,
         }
 
         if dump_path:
@@ -220,14 +266,26 @@ class ArmorCodeClient:
 
         return all_findings
 
+    def _apply_ignore_mitigated(self, body):
+        """Set the ``ignoreMitigated`` flag on a request body when configured.
+
+        ``get_findings`` stashes the resolved value on ``self._ignore_mitigated``
+        (``None`` means "use the API default"). Applied to every probe/fetch body
+        so date-chunked and paginated requests stay consistent.
+        """
+        val = getattr(self, "_ignore_mitigated", None)
+        if val is not None:
+            body["ignoreMitigated"] = val
+        return body
+
     def _probe_count(self, filters, filter_ops):
         """Fetch page 0 with size=1 to get totalElements."""
-        body = {
+        body = self._apply_ignore_mitigated({
             "filters": filters,
             "filterOperations": filter_ops,
             "page": 0,
             "size": 1,
-        }
+        })
         resp = self._session.post(
             f"{self.base_url}/user/findings/",
             json=body,
@@ -260,14 +318,14 @@ class ArmorCodeClient:
                 break
             size = min(page_size, self._MAX_RESULTS - offset)
 
-            body = {
+            body = self._apply_ignore_mitigated({
                 "filters": filters,
                 "filterOperations": filter_ops,
                 "page": page,
                 "size": size,
                 "sortColumn": "foundOn",
                 "sortOrder": "DESC",
-            }
+            })
             resp = self._session.post(url, json=body, timeout=self._timeout)
             resp.raise_for_status()
             data = resp.json()
@@ -452,6 +510,9 @@ class ArmorCodeClient:
         if extra_filters:
             filters.update(extra_filters)
 
+        # Don't inherit a MITIGATED-scoped ignoreMitigated setting from a prior
+        # get_findings() call; use the API default for these queries.
+        self._ignore_mitigated = None
         return self._paginated_fetch(filters, {}, page_size)
 
     def _lookup_sub_product_id(self, sub_product_name):
@@ -565,6 +626,9 @@ class ArmorCodeClient:
         if extra_filters:
             filters.update(extra_filters)
 
+        # Don't inherit a MITIGATED-scoped ignoreMitigated setting from a prior
+        # get_findings() call; use the API default for these queries.
+        self._ignore_mitigated = None
         return self._paginated_fetch(filters, {}, page_size)
 
     def _lookup_engagement_id(self, engagement_name):
