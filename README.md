@@ -68,6 +68,36 @@ ac.upload_findings(
 
 See **[docs/uploading-findings.md](docs/uploading-findings.md)** for all four methods with request shapes and code samples.
 
+### Uploading Assets
+
+Bulk-import assets via `upload_assets()`. `POST /api/v2/assets/upload` is a
+three-step asynchronous, pre-signed-S3 flow — the SDK wraps steps 1–2:
+
+1. POST metadata (`toolName`, `assetType`, `delimiter`, `fileName`) → returns a pre-signed S3 URL.
+2. `PUT` the CSV bytes to that S3 URL.
+3. ArmorCode ingests the file asynchronously; assets appear under **Explore > Assets** within a few minutes, tagged `source == toolName`.
+
+```python
+ac.upload_assets(
+    [
+        {"Name": "web-01", "IPv4": "10.0.0.1", "Operating System": "Ubuntu 22.04"},
+        {"Name": "db-01",  "IPv4": "10.0.0.2", "Operating System": "RHEL 9"},
+    ],
+    tool_name="Custom-CMDB",   # source tag applied to imported assets
+    asset_type="HOST",          # HOST | IMAGE | CLOUD_RESOURCE | REPOSITORY | NETWORK_RESOURCE | OTHERS
+    file_name="assets.csv",     # must end in .csv
+)
+# -> {"signedUrl": ..., "s3Status": 200, "rowCount": 2, ...}  # ingest is async
+```
+
+Each row needs at least one primary field — **Name** (preferred), **IPv4**, or
+**DNS Name**. Unrecognized CSV columns are mapped to the asset's Tags. You can
+also pass a path to an existing `.csv` file instead of a list of dicts. A `200`
+means the file was accepted, not that assets are queryable yet — poll
+`get_assets(source="Custom-CMDB")` to confirm. The `delimiter` (`;` or `|`)
+only applies to multi-value cells *within* a column; columns are always
+comma-separated.
+
 ---
 
 ## Ruby
@@ -127,5 +157,6 @@ API_TOKEN=<api-token>
 - **[docs/methods.md](docs/methods.md)** — complete method reference, grouped by resource
 - **[docs/findings.md](docs/findings.md)** — finding filters, filter cheatsheet, 10K limit & auto-chunking
 - **[docs/uploading-findings.md](docs/uploading-findings.md)** — the four findings-upload methods (JSON, CSV multipart, CSV → custom tool, native scan report)
+- **[docs/undocumented-apis.md](docs/undocumented-apis.md)** — ArmorCode endpoints the SDK doesn't wrap and the public spec documents poorly, with verified request shapes (currently: Azure Boards ticket-mapping CRUD via the legacy `/user/tickets/jira/*` path)
 - **[examples/demo.py](examples/demo.py)** — Python demo script
 - **[ruby/examples/demo.rb](ruby/examples/demo.rb)** — Ruby demo script

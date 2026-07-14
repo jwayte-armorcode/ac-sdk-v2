@@ -2004,6 +2004,126 @@ class ArmorCodeClient:
             page += 1
         return assets
 
+    # Valid asset types accepted by POST /api/v2/assets/upload
+    ASSET_TYPES = (
+        "HOST", "IMAGE", "CLOUD_RESOURCE",
+        "REPOSITORY", "NETWORK_RESOURCE", "OTHERS",
+    )
+
+    def upload_assets(
+        self,
+        assets,
+        *,
+        tool_name="APICustom",
+        asset_type="HOST",
+        delimiter=";",
+        file_name="assets.csv",
+    ):
+        """Bulk-import assets via the pre-signed S3 upload flow.
+
+        ``POST /api/v2/assets/upload`` does **not** accept asset data directly.
+        It is a three-step, asynchronous flow:
+
+        1. POST metadata (``toolName``, ``assetType``, ``delimiter``,
+           ``fileName``) and receive a pre-signed S3 URL.
+        2. PUT the CSV bytes directly to that S3 URL.
+        3. ArmorCode processes the file asynchronously and imports the assets
+           (they appear under Explore > Assets within a few minutes, tagged
+           with ``source == tool_name``).
+
+        This method performs steps 1 and 2. Because ingestion is asynchronous,
+        a ``200`` from this call means the file was accepted, not that the
+        assets are queryable yet — poll :meth:`get_assets` to confirm.
+
+        Args:
+            assets: Either
+                - a list of asset dicts (converted to CSV in memory; the union
+                  of all keys becomes the header row), or
+                - a path (str / ``Path``) to an existing ``.csv`` file to upload
+                  as-is.
+                Each asset needs at least one primary field for ingestion:
+                ``Name`` (preferred), ``IPv4``, or ``DNS Name``. Unrecognized
+                columns are mapped to the asset's Tags. Use only one ``Name``
+                column.
+            tool_name: Source identifier the imported assets are tagged with
+                (e.g. ``"Custom-CMDB"``, ``"ServiceNow-Export"``). Defaults to
+                ``"APICustom"``.
+            asset_type: One of :attr:`ASSET_TYPES` (default ``"HOST"``).
+            delimiter: Separator for *multi-value fields within a CSV cell* —
+                ``";"`` or ``"|"``. Note: the CSV columns themselves are always
+                comma-separated; this only affects multi-value cells.
+            file_name: Name reported to the API. Must end in ``.csv``.
+
+        Returns:
+            dict: ``{"signedUrl": <url>, "s3Status": <code>, "fileName": ...,
+            "toolName": ..., "assetType": ..., "rowCount": <int or None>}``.
+
+        Raises:
+            ValueError: If ``asset_type``/``delimiter``/``file_name`` are invalid
+                or ``assets`` is empty.
+        """
+        if asset_type not in self.ASSET_TYPES:
+            raise ValueError(
+                f"asset_type must be one of {self.ASSET_TYPES}, got {asset_type!r}"
+            )
+        if delimiter not in (";", "|"):
+            raise ValueError(f"delimiter must be ';' or '|', got {delimiter!r}")
+        if not str(file_name).endswith(".csv"):
+            raise ValueError(f"file_name must end with '.csv', got {file_name!r}")
+
+        # Build the CSV payload (from a file path or a list of dicts).
+        row_count = None
+        if isinstance(assets, (str, Path)):
+            csv_bytes = Path(assets).read_bytes()
+        else:
+            asset_list = list(assets)
+            if not asset_list:
+                raise ValueError("assets is empty; nothing to upload")
+            import csv as _csv
+            import io as _io
+
+            header = list(dict.fromkeys(k for a in asset_list for k in a))
+            buf = _io.StringIO()
+            writer = _csv.DictWriter(buf, fieldnames=header)
+            writer.writeheader()
+            writer.writerows(asset_list)
+            csv_bytes = buf.getvalue().encode("utf-8")
+            row_count = len(asset_list)
+
+        # Step 1: request the pre-signed S3 URL.
+        resp = self._session.post(
+            f"{self.base_url}/api/v2/assets/upload",
+            json={
+                "toolName": tool_name,
+                "assetType": asset_type,
+                "delimiter": delimiter,
+                "fileName": file_name,
+            },
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        signed_url = resp.json()["signedUrl"]
+
+        # Step 2: PUT the CSV to S3. This must NOT carry the client's Bearer
+        # token or JSON content-type, so use a bare requests.put (not the
+        # session, whose default headers would break the signed request).
+        s3 = requests.put(
+            signed_url,
+            data=csv_bytes,
+            headers={"Content-Type": "text/csv"},
+            timeout=self._timeout * 3,
+        )
+        s3.raise_for_status()
+
+        return {
+            "signedUrl": signed_url,
+            "s3Status": s3.status_code,
+            "fileName": file_name,
+            "toolName": tool_name,
+            "assetType": asset_type,
+            "rowCount": row_count,
+        }
+
     # ------------------------------------------------------------------
     # Security Tools
     # ------------------------------------------------------------------
