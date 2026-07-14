@@ -57,7 +57,7 @@ legacy path is the one verified to work for writes, so it is what this doc uses.
 | List mappings | `GET /api/v2/tickets/configuration?ticketSystem=AZURE_BOARD` | — | ✅ `get_azure_board_configs()` |
 | List connections | `GET /api/v2/tickets/configuration/login/AZURE_BOARD` | — | ✅ `get_azure_board_login_configs()` |
 | Load add-mapping form | `POST /user/tickets/jira/projects` | `{"loginConfigId": <id>}` | ❌ |
-| **Create mapping** | `POST /user/tickets/jira/configuration` | full config object | ❌ |
+| **Create mapping** | `POST /user/tickets/jira/configuration` | full config object | ✅ `create_azure_board_config()` (SUBPRODUCT-scoped, with repo-conflict pre-check) |
 | **Edit mapping** | `PUT /user/tickets/jira/configuration/{id}` | full config object | ❌ |
 | **Delete mapping** | `DELETE /user/tickets/jira/configuration/{id}` | — | ❌ |
 
@@ -181,6 +181,40 @@ accordingly and add `product` / `subProduct` id arrays:
     "product": [680985],
     "subProduct": [2130703],
 ```
+
+#### SDK wrapper: `create_azure_board_config()` (with repo-conflict check)
+
+The SUBPRODUCT case is wrapped in the SDK. In this tenant model a **repo is a
+sub-product**, and mappings carry no repo field — only `product[]` and
+`subProductIds[]` (names mirrored in `productNameId` / `subProductNameIds`).
+A repo may belong to only one mapping, so the wrapper resolves the repo names
+to sub-product ids, scans **every** existing Azure Boards mapping across **all**
+connections, and refuses to create a duplicate — raising
+`AzureBoardMappingConflict` (which carries the offending mapping's `id`,
+`application`, and colliding `repos`) instead of double-mapping.
+
+```python
+from armorcode import ArmorCodeClient, AzureBoardMappingConflict
+
+ac = ArmorCodeClient.from_env("env")
+try:
+    cfg = ac.create_azure_board_config(
+        project_key="Delinea.Work",
+        login_id=43917,
+        repos=["My.Repo", "Other.Repo"],   # repo = sub-product (by name)
+        issue_type="Bug",
+        product="Cybersecurity",            # optional application (name or id)
+    )
+except AzureBoardMappingConflict as e:
+    for c in e.conflicts:
+        print(c["id"], c["application"], c["repos"])
+```
+
+`custom_fields` and `field_defaults` params let you pass the project-specific
+field objects + flat keys (from the Step-1 form load) through untouched; the
+wrapper fills the structural envelope (`ticketSystemType`, `configurationType`,
+`properties`, `labels`, `subProduct`/`product`). Only the conflict check is
+opinionated — everything else is a thin pass-through to the verified body shape.
 
 ### Step 3 — edit a mapping
 

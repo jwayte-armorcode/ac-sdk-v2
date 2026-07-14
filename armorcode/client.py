@@ -9,6 +9,34 @@ from pathlib import Path
 import requests
 
 
+class AzureBoardMappingConflict(Exception):
+    """Raised when creating an Azure Boards mapping would double-map a repo.
+
+    A repo (sub-product) may only belong to one Azure Boards ticket
+    configuration. If :meth:`ArmorCodeClient.create_azure_board_config` is
+    asked to map a repo that is already claimed by an existing mapping, it
+    raises this instead of creating a second, ambiguous mapping.
+
+    Attributes:
+        conflicts: list[dict] — one entry per pre-existing mapping that
+            already claims one or more of the requested repos, each shaped
+            ``{"id": <config id>, "application": <product name(s)>,
+            "repos": [<sub-product names>]}``. ``repos`` is limited to the
+            requested repos that collide (not the mapping's full repo set).
+    """
+
+    def __init__(self, conflicts):
+        self.conflicts = conflicts
+        summary = "; ".join(
+            f"mapping {c['id']} (application {c['application']!r}) already maps "
+            f"{', '.join(c['repos'])}"
+            for c in conflicts
+        )
+        super().__init__(
+            f"Cannot create Azure Boards mapping — repo(s) already mapped: {summary}"
+        )
+
+
 class ArmorCodeClient:
     """Lightweight SDK for the ArmorCode REST API.
 
@@ -1576,6 +1604,184 @@ class ArmorCodeClient:
             "totalElements": result["totalElements"],
             "totalPages": result["totalPages"],
         }
+
+    def create_azure_board_config(
+        self,
+        project_key,
+        login_id,
+        repos,
+        *,
+        issue_type="Bug",
+        product=None,
+        properties=None,
+        labels=None,
+        custom_fields=None,
+        field_defaults=None,
+        enabled=True,
+        extra=None,
+    ):
+        """Create a SUBPRODUCT-scoped Azure Boards mapping, failing on repo conflicts.
+
+        In this tenant model a *repo* is a sub-product, and a repo may belong
+        to only one Azure Boards ticket configuration. Before creating the
+        mapping this method checks every existing Azure Boards config (across
+        **all** connections) and, if any requested repo is already mapped,
+        raises :class:`AzureBoardMappingConflict` **without creating anything**
+        — the exception carries the offending mapping(s) as ``id`` /
+        ``application`` / ``repos``.
+
+        Writes go to the legacy ``POST /user/tickets/jira/configuration`` path
+        (the one the web app uses), not the OpenAPI ``/api/v2/tickets/*`` path.
+        See ``docs/undocumented-apis.md``.
+
+        Args:
+            project_key: Azure DevOps project key (e.g. ``"Delinea.Work"``).
+            login_id: Connection id from :meth:`get_azure_board_login_configs`.
+            repos: Repo (sub-product) name(s) to map — a str or list of str.
+                Resolved to sub-product ids internally.
+            issue_type: Azure Boards work-item type (free-form per project,
+                e.g. ``"Bug"`` or ``"Product Backlog Item"``). Default ``"Bug"``.
+            product: Optional product (application) name/id, or list thereof,
+                to set on the mapping's ``product`` array. If omitted, the
+                mapping is created with an empty ``product`` list (sub-product
+                scoping alone). Names are resolved to ids.
+            properties: Optional severity->priority map. Defaults to
+                ``{"critical": "1", "high": "2", "medium": "3", "low": "4",
+                "info": "4"}`` plus the empty ``*_ticket_severity_mapping`` keys
+                the UI sends on create.
+            labels: Optional list of work-item labels. Defaults to
+                ``["Armorcode_Associated_Finding"]``.
+            custom_fields: Optional list of ``CustomField`` objects (Area Path,
+                Product, etc.) exactly as the form-load step returns them.
+                Passed through untouched.
+            field_defaults: Optional dict of the flat top-level field keys the
+                UI mirrors alongside ``custom_fields`` (e.g.
+                ``{"/fields/System.AreaPath": "\\\\Proj\\\\Area"}``). Merged into
+                the top level of the body verbatim.
+            enabled: Whether the mapping is enabled. Default True.
+            extra: Optional dict merged into the request body last (escape
+                hatch for fields not surfaced as named params).
+
+        Returns:
+            dict: The created configuration.
+
+        Raises:
+            AzureBoardMappingConflict: If any requested repo is already claimed
+                by an existing Azure Boards mapping. Nothing is created.
+            ValueError: If a repo or product name cannot be resolved.
+        """
+        if isinstance(repos, str):
+            repos = [repos]
+        if not repos:
+            raise ValueError("At least one repo (sub-product) is required")
+
+        # Resolve repo names -> sub-product ids, keeping the mapping both ways
+        # so conflict reporting can name the repos back to the caller.
+        sub_products = self.get_sub_products()
+        name_by_id = {sp["id"]: sp.get("name") for sp in sub_products if "id" in sp}
+        id_by_name = {}
+        for sp in sub_products:
+            if "name" in sp and "id" in sp:
+                id_by_name.setdefault(sp["name"], []).append(sp["id"])
+
+        target_ids = []
+        for repo in repos:
+            matches = id_by_name.get(repo)
+            if not matches:
+                raise ValueError(f"No repo (sub-product) found with name {repo!r}")
+            if len(matches) > 1:
+                raise ValueError(
+                    f"Multiple sub-products named {repo!r} found: {matches}. "
+                    f"Names must be unique to map by name."
+                )
+            target_ids.append(matches[0])
+        target_set = set(target_ids)
+
+        # Conflict check — scan every existing Azure Boards mapping (all logins)
+        # for any overlap on the requested sub-product ids. The config object
+        # already carries the product/sub-product names it references in
+        # ``productNameId`` / ``subProductNameIds`` (id+name pairs), so no
+        # extra lookups are needed — and this works even for products the
+        # products listing doesn't surface.
+        existing = self.get_azure_board_configs()
+        conflicts = []
+        for cfg in existing:
+            claimed = set(cfg.get("subProductIds") or [])
+            overlap = claimed & target_set
+            if not overlap:
+                continue
+            app_names = [
+                p.get("name", str(p.get("id")))
+                for p in (cfg.get("productNameId") or [])
+            ]
+            application = ", ".join(app_names) if app_names else (
+                cfg.get("projectKey") or "(unknown)"
+            )
+            # Prefer the mapping's own sub-product name pairs; fall back to the
+            # tenant-wide name map for any id not carried on the config.
+            sp_name_on_cfg = {
+                sp["id"]: sp.get("name")
+                for sp in (cfg.get("subProductNameIds") or [])
+                if "id" in sp
+            }
+            conflicts.append({
+                "id": cfg.get("id"),
+                "application": application,
+                "repos": [
+                    sp_name_on_cfg.get(sid) or name_by_id.get(sid, str(sid))
+                    for sid in sorted(overlap)
+                ],
+            })
+
+        if conflicts:
+            raise AzureBoardMappingConflict(conflicts)
+
+        # Resolve product (application) argument, if given.
+        product_ids = []
+        if product is not None:
+            prod_list = product if isinstance(product, list) else [product]
+            for p in prod_list:
+                product_ids.append(
+                    self._lookup_product_id(p) if isinstance(p, str) else int(p)
+                )
+
+        if properties is None:
+            properties = {
+                "critical": "1", "critical_ticket_severity_mapping": "",
+                "high": "2", "high_ticket_severity_mapping": "",
+                "medium": "3", "medium_ticket_severity_mapping": "",
+                "low": "4", "low_ticket_severity_mapping": "",
+                "info": "4", "info_ticket_severity_mapping": "",
+            }
+        if labels is None:
+            labels = ["Armorcode_Associated_Finding"]
+
+        body = {
+            "projectKey": project_key,
+            "issueType": issue_type,
+            "ticketSystemType": self.TICKET_SYSTEM_AZURE_BOARD,
+            "loginConfigId": login_id,
+            "configurationType": "SUBPRODUCT",
+            "product": product_ids,
+            "subProduct": target_ids,
+            "enabled": enabled,
+            "labels": labels,
+            "properties": properties,
+            "customFields": custom_fields or [],
+        }
+        if field_defaults:
+            body.update(field_defaults)
+        if extra:
+            body.update(extra)
+
+        resp = self._session.post(
+            f"{self.base_url}/user/tickets/jira/configuration",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        return result.get("data", result) if isinstance(result, dict) else result
 
     # ------------------------------------------------------------------
     # Users

@@ -234,9 +234,23 @@ Azure Boards rides the shared ticketing endpoints with `ticketSystemType="AZURE_
 | `get_azure_board_configs(product, sub_product, login_id)` | List mappings (product/sub-product → project) |
 | `get_azure_board_projects(login_id, name, organisation, ...)` | Discover ADO projects visible to a connection |
 | `get_azure_board_tickets(product, sub_product, assignee, ...)` | Tickets created in Azure Boards |
-| *mapping create/edit/delete* | Not wrapped — `POST` / `PUT` / `DELETE /user/tickets/jira/configuration[/{id}]` via `ac._session`; see the doc |
+| `create_azure_board_config(project_key, login_id, repos, issue_type, product, ...)` | **Write** — create a SUBPRODUCT-scoped mapping (repo = sub-product). **Pre-checks repo conflicts** across all connections; raises `AzureBoardMappingConflict` (carries `id`/`application`/`repos`) instead of double-mapping. Uses the legacy `POST /user/tickets/jira/configuration` path |
+| *mapping edit/delete* | Not wrapped — `PUT` / `DELETE /user/tickets/jira/configuration[/{id}]` via `ac._session`; see the doc |
 
 **Mapping-write essentials** (from the doc): body is a full config object with `loginConfigId`, `projectKey`, `issueType` (free-form per project), `ticketSystemType:"AZURE_BOARD"`, `configurationType` (`GLOBAL`|`PRODUCT`|`SUBPRODUCT`; latter two add `product`/`subProduct` id arrays), `properties` (severity→priority), and `customFields[]`. Each active field's value is sent **twice** — as a flat top-level key (e.g. `"/fields/System.AreaPath"`) and inside `customFields[]`. Field keys are **project-specific** (e.g. due date is `"duedate"` on one project, `"/fields/Microsoft.VSTS.Scheduling.DueDate"` on another) — build the list from the Step-1 `POST /user/tickets/jira/projects` response, not a fixed template.
+
+**Repo model + conflict detection:** In this tenant a *repo* is a **sub-product**; AB mappings carry no repo field, only `product[]` + `subProductIds[]` (with names mirrored in `productNameId`/`subProductNameIds`). `create_azure_board_config()` resolves repo names → sub-product ids and refuses to create a mapping if any repo is already claimed by an existing mapping (any connection), raising `AzureBoardMappingConflict`:
+
+```python
+from armorcode import AzureBoardMappingConflict
+try:
+    ac.create_azure_board_config("Delinea.Work", login_id=43917,
+                                 repos=["My.Repo", "Other.Repo"],
+                                 issue_type="Bug", product="Cybersecurity")
+except AzureBoardMappingConflict as e:
+    for c in e.conflicts:
+        print(c["id"], c["application"], c["repos"])  # already-mapped repos
+```
 
 ---
 
