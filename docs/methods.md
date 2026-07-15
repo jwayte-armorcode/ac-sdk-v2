@@ -96,9 +96,9 @@ ac.upload_findings(
 
 **Owner fields** (`update_team_with_user(team, owners={...})`): 5 keys —
 `complianceOwner`, `securityOwner`, `engineeringOwner`, `businessOwner`,
-`supportOwner`. The CUSTOMER_A tenant relabels these in global-settings Titles:
-AppSec Engineer → complianceOwner, Security Ambassador → securityOwner, CUSTOMER_A
-Director → engineeringOwner, CUSTOMER_A PM → businessOwner, **CUSTOMER_A VP →
+`supportOwner`. The Acme tenant relabels these in global-settings Titles:
+AppSec Engineer → complianceOwner, Security Ambassador → securityOwner, Acme
+Director → engineeringOwner, Acme PM → businessOwner, **Acme VP →
 supportOwner**.
 
 **Scope-of-access gotcha:** `PUT /api/team/with-user` is a FULL REPLACE. Its
@@ -180,13 +180,13 @@ ac.get_tickets(product="my-product", page=1, size=50)     # paginate
 | `add_user_to_team(user, team_id, team_name, role_name, role_id, clear_tenant_role)` | Append a team to a user's teamInfo (optionally clearing tenantRole in the same PUT) |
 
 **tenantRole vs teamInfo role — two namespaces:**
-- *teamInfo role* — per-team membership role (e.g. `"CUSTOMER_A Executive"`,
-  `"CUSTOMER_A PM"`), used in `add_user_to_team` and team-owner assignment.
+- *teamInfo role* — per-team membership role (e.g. `"Acme Executive"`,
+  `"Acme PM"`), used in `add_user_to_team` and team-owner assignment.
 - *tenantRole* — account-level role for `create_user`. Only a SUBSET of role
   names are valid tenantRoles. Valid: Read Only, Admin, Developer, Security
-  Engineer, DevOps, Executive, CUSTOMER_A Security Engineer, CUSTOMER_A Engineering
-  Manager, CUSTOMER_A Security Ambassadors, CUSTOMER_A PM. **NOT valid:** "CUSTOMER_A
-  Executive", "CUSTOMER_A IT Manager", "CUSTOMER_A Software Engineer", "CUSTOMER_A IT
+  Engineer, DevOps, Executive, Acme Security Engineer, Acme Engineering
+  Manager, Acme Security Ambassadors, Acme PM. **NOT valid:** "Acme
+  Executive", "Acme IT Manager", "Acme Software Engineer", "Acme IT
   Engineer".
 
 **Creating a plain team member (no account role):** `POST /user/add/user`
