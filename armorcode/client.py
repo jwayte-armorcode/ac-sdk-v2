@@ -1777,7 +1777,7 @@ class ArmorCodeClient:
         See ``docs/undocumented-apis.md``.
 
         Args:
-            project_key: Azure DevOps project key (e.g. ``"Delinea.Work"``).
+            project_key: Azure DevOps project key (e.g. ``"Acme.Work"``).
             login_id: Connection id from :meth:`get_azure_board_login_configs`.
             repos: Repo (sub-product) name(s) to map — a str or list of str.
                 Resolved to sub-product ids internally.
@@ -1946,7 +1946,7 @@ class ArmorCodeClient:
         """List all users via ``GET /user/get-users`` (id, email, displayName, name).
 
         Lighter than :meth:`search_users` — no teamInfo/tenantRole. Useful for
-        name/email lookups. Note many Aledade accounts have no display name, so
+        name/email lookups. Note many Acme accounts have no display name, so
         ``displayName`` equals the email (match on email for those).
 
         Returns:
@@ -1996,16 +1996,16 @@ class ArmorCodeClient:
 
         Two role namespaces exist (they overlap but are not interchangeable):
 
-        * **teamInfo roles** — per-team membership roles (e.g. ``"Aledade
-          Executive"``, ``"Aledada PM"``) used in a user's ``teamInfo`` and in
+        * **teamInfo roles** — per-team membership roles (e.g. ``"Acme
+          Executive"``, ``"Acme PM"``) used in a user's ``teamInfo`` and in
           team-owner assignment.
         * **tenantRoles** — account-level roles accepted by :meth:`create_user`.
           Only a SUBSET of role names are valid tenantRoles. Confirmed valid:
           Read Only, Admin, Developer, Security Engineer, DevOps, Executive,
-          Aledade Security Engineer, Aledade Engineering Manager, Aledade
-          Security Ambassadors, Aledada PM. NOT valid as tenantRoles: "Aledade
-          Executive", "Aledade IT Manager", "Aledade Software Engineer",
-          "Aledade IT Engineer".
+          Acme Security Engineer, Acme Engineering Manager, Acme
+          Security Ambassadors, Acme PM. NOT valid as tenantRoles: "Acme
+          Executive", "Acme IT Manager", "Acme Software Engineer",
+          "Acme IT Engineer".
 
         Returns:
             list[dict]: Roles, each with ``id``, ``role`` (name),
@@ -2055,7 +2055,7 @@ class ArmorCodeClient:
           with "User Mapping Info Is Missing"), so the user is created with the
           low-privilege placeholder ``CREATE_PLACEHOLDER_TENANT_ROLE``.
         * It accepts NO name field, so the display name will be the email (an
-          "email-only" account, like many Aledade team-owner users).
+          "email-only" account, like many Acme team-owner users).
         * The placeholder is cleared LATER by :meth:`add_user_to_team` (with
           ``clear_tenant_role=True``), which sets ``tenantRole=null`` and adds
           the team in one PUT — a clear-to-null with an EMPTY teamInfo is
@@ -2126,7 +2126,7 @@ class ArmorCodeClient:
                   ``email``, existing ``teamInfo``, ``tenantRole``, etc.).
             team_id: Team id to add.
             team_name: Team name (stored in the teamInfo entry).
-            role_name: teamInfo role NAME (e.g. ``"Aledade Executive"``).
+            role_name: teamInfo role NAME (e.g. ``"Acme Executive"``).
             role_id: teamInfo role id.
             clear_tenant_role: If True, also set ``tenantRole`` to None.
 
@@ -2243,10 +2243,10 @@ class ArmorCodeClient:
             out.append(np)
         return out
 
-    # The 5 team owner-field keys (UI labels in parens are the Aledade tenant's
+    # The 5 team owner-field keys (UI labels in parens are the Acme tenant's
     # global-settings Titles): complianceOwner (AppSec Engineer), securityOwner
-    # (Security Ambassador), engineeringOwner (Aledade Director), businessOwner
-    # (Aledade PM), supportOwner (Aledade VP).
+    # (Security Ambassador), engineeringOwner (Acme Director), businessOwner
+    # (Acme PM), supportOwner (Acme VP).
     _TEAM_OWNER_KEYS = (
         "complianceOwner", "securityOwner", "engineeringOwner",
         "businessOwner", "supportOwner",

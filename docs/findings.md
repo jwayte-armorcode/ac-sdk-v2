@@ -71,8 +71,8 @@ There are **two** findings endpoints with different pagination models and differ
 | Approach | Result |
 |----------|--------|
 | `/user/findings/` + `page`/`size` | ❌ **Broken for bulk** — `page` and `size` params are ignored; every page returns the same first ~10 rows. This is where a "10K limit" *would* bite, but you can't even walk that deep. Fine for reading `totalElements` (a count) only. |
-| `/api/findings` + `?afterKey=` cursor | ✅ **Correct bulk-export path.** Verified live crossing 12,000 records (Anaplan): 0 dups, 0 errors. Keyset cursor has **no 10K offset limit** — offset-based limits don't apply. |
-| CVE filter key | ✅ `cve` (list). ❌ `cveId` is **silently ignored** and returns the entire unfiltered tenant (matched 8.67M on Anaplan). Use `cve` on both endpoints. |
+| `/api/findings` + `?afterKey=` cursor | ✅ **Correct bulk-export path.** Verified live crossing 12,000 records on a large tenant: 0 dups, 0 errors. Keyset cursor has **no 10K offset limit** — offset-based limits don't apply. |
+| CVE filter key | ✅ `cve` (list). ❌ `cveId` is **silently ignored** and returns the entire unfiltered tenant (matched 8.67M records on a large tenant). Use `cve` on both endpoints. |
 
 > **Correction to older notes:** the CVE key is **not** tenant-dependent (`cveId` vs `cve` by tenant was wrong — all tenants share `app.armorcode.com`). Use `cve` everywhere. `cveId` is a silent no-op.
 
@@ -83,7 +83,7 @@ There are **two** findings endpoints with different pagination models and differ
 - **Page size is fixed at 10** regardless of `maxSize`/`size`. A large pull = many round-trips (12K ≈ 1,200 requests). Parallelise by chunking on `severity`/date for **throughput**, not to dodge a limit.
 - **All filter values must be JSON arrays.** A scalar (bare string/int) returns `HTTP 400: Cannot deserialize value of type ArrayList<Object> from String/Integer`.
 
-### `/api/findings` filters (verified live on Anaplan)
+### `/api/findings` filters (verified live)
 
 Filters go under `filters`, **singular** keys, values as arrays:
 
