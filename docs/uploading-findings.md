@@ -104,11 +104,52 @@ init = ac._session.post(
     json={"product": 843798, "subProduct": 530718, "environment": "Production", "fileName": "snyk-report.json"},
 ).json()
 
-# 2. presign each part (PartPresignRequest) -> signed URL(s); PUT each part to S3
-# 3. complete (CompleteMultipartRequest) with the returned ETags
+s3_key, upload_id, scan_id = (init["data"][k] for k in ("s3Key", "uploadId", "scanId"))
+
+# 2. presign part N -> `data` is the URL as a BARE STRING, not an object
+url = ac._session.post(
+    f"{ac.base_url}/api/v2/scans/upload/presign",
+    json={"s3Key": s3_key, "uploadId": upload_id, "partNumber": 1},
+).json()["data"]
+
+# 3. PUT the bytes straight to S3 — no auth header; the URL is pre-signed
+put = requests.put(url, data=open("snyk-report.json", "rb").read())
+etag = put.headers["ETag"].strip('"')
+
+# 4. complete with the collected ETags
+ac._session.post(
+    f"{ac.base_url}/api/v2/scans/upload/complete",
+    json={"s3Key": s3_key, "uploadId": upload_id, "scanId": scan_id,
+          "parts": [{"partNumber": 1, "eTag": etag}]},
+).raise_for_status()
 ```
 
 - **Legacy single-shot:** `POST /api/scanUploadUrl` (`S3UploadUrlRequest`).
+- **Not usable from an API token:** `POST /client/utils/scan/upload` (the endpoint
+  Swagger presents most prominently for scan upload) is gated by
+  `ROLE_REPORT_INGESTION` at the security-filter layer and returns
+  `403 "You don't have required role to perform this action."` The 403 fires
+  *before* body validation, so a correctly-formed payload is still rejected —
+  don't burn time tuning the body. Note it also takes `product`/`subProduct` as
+  **name strings**, unlike the v2 endpoint's numeric ids, so payloads are not
+  interchangeable.
+
+### Checking the result
+
+```python
+scan = ac._session.get(f"{ac.base_url}/api/scans/{scan_id}").json()
+scan["status"], scan["totalCount"], scan["totalNew"], scan["totalDuplicate"]
+```
+
+- **No `data` envelope:** `GET /api/scans/{scanId}` returns the scan object
+  **unwrapped**, unlike the upload endpoints which nest under `data`. Using
+  `.get("data", {})` here silently yields `{}`.
+- **Status values** are `INITIATED`, `PROCESSING`, `IMPORTING`, `COMPLETED`,
+  `FAILED`. There is no `PENDING` or `IN_PROGRESS` — polling for those spins
+  until timeout.
+- Severity breakdown lives in `allFindingStats.severity`; re-uploading an
+  identical file yields `totalNew: 0` with `totalDuplicate` equal to the finding
+  count.
 
 ---
 
@@ -121,10 +162,20 @@ init = ac._session.post(
 | 1. Generic JSON | ✅ `{"scanId": ...}` |
 | 2. CSV multipart | ✅ HTTP 200 "File uploaded successfully" |
 | 3. CSV → custom tool (`custom-SCA-Sample-Findings`) | ✅ presign 200 + S3 PUT 200 |
-| 4. Native scan report (initiate) | ✅ HTTP 200 + `uploadId` |
+| 4. Native scan report (full 4-step flow) | ✅ scan `COMPLETED`, 5 findings ingested |
 
 Runnable examples for all four: **`examples/upload_findings.py`**.
+Method 4 as a standalone CLI: **`examples/upload_scan_v2.py`**.
+
+Method 4 detail (2026-07-28, tool `Trivy`, group `juice-shop` / subgroup
+`jwayte-armorcode/juice-shop`): initiate → presign → S3 PUT → complete all
+returned 200; `GET /api/scans/{id}` then reported `status: COMPLETED`,
+`totalCount: 5`, `totalNew: 5`, severity `{Critical: 1, High: 2, Medium: 1,
+Low: 1}`, `scanType: ["SCA"]`, processed in 376 ms. A second upload of the same
+file returned `totalNew: 0` / `totalDuplicate: 5`, confirming dedup.
 
 Two gotchas the testing surfaced:
 - **Method 2** must NOT send `Content-Type: application/json` — the client session pins that header, which breaks the multipart boundary (HTTP 415). Send only the auth header and let `requests` set the multipart content-type (see the example).
-- **Method 4** `toolName` must be a **native** ArmorCode scanner (Snyk, Trivy, Semgrep, SonarQube, Dependabot all accepted) — a custom tool name is rejected with `400 "Custom tool is not supported yet"`.
+- **Method 4** `toolName` must be a **native** ArmorCode scanner (Snyk, Trivy, Semgrep, SonarQube, Dependabot all accepted) — a custom tool name is rejected with `400 "Custom tool is not supported yet"`. Not every native name passes either: `OWASP ZAP` returns `400 "Tool is not supported yet"`.
+- **Method 4** the presign response puts the URL in `data` as a **bare string**, not an object — `json()["data"]["url"]` raises `TypeError`.
+- **Method 4** `GET /api/scans/{scanId}` returns the scan **unwrapped** (no `data` key), and its status enum has no `PENDING`/`IN_PROGRESS` — see *Checking the result* above. Both bugs are easy to write and fail silently rather than loudly.

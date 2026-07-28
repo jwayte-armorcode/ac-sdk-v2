@@ -156,7 +156,7 @@ There are four distinct ways to get findings into ArmorCode, differing by **inpu
 | 1 | **Generic JSON** | `POST /api/findings/upload` | JSON array of finding objects | Direct POST | ✅ `upload_findings()` |
 | 2 | **CSV multipart** | `POST /user/findings/upload/csv` | CSV file on disk | `multipart/form-data` | ❌ |
 | 3 | **CSV → custom tool** | `POST /user/tools/generic/configurations/{tool_name}/upload` (or `POST /api/v2/findings/csv/upload`) | CSV mapped to a named custom tool config | Presigned S3 (presign → PUT) | ❌ |
-| 4 | **Native scan report** | `POST /api/v2/scans/upload/initiate` → `.../presign` → `.../complete` (legacy: `POST /api/scanUploadUrl`) | Raw scanner output (Snyk/Semgrep/Trivy/…) | Multipart presigned S3 | ❌ |
+| 4 | **Native scan report** | `POST /api/v2/scans/upload/initiate` → `.../presign` → S3 `PUT` → `.../complete` (legacy: `POST /api/scanUploadUrl`) | Raw scanner output (Snyk/Semgrep/Trivy/…) | Multipart presigned S3 | ❌ `examples/upload_scan_v2.py` |
 
 **Choosing:** build findings in code → **1**. Have a normalized CSV, one-shot → **2**. CSV that should attribute to a specific custom tool with a saved field mapping (and/or large files) → **3**. Ingest a raw native scanner file and let ArmorCode parse it → **4**.
 
@@ -177,14 +177,36 @@ always commas; the mapping's field delimiter (`;` or `|`) only splits multi-valu
 *cells*. Existing sandbox custom-tool config to target: `custom-SCA-Sample-Findings`
 (id 1001, toolType SCA).
 
-**Method 4 — native scan report (not wrapped):** three-step multipart-to-S3:
-`initiate` (query params `toolName`, `totalParts`) → `presign` per part → `complete`.
+**Method 4 — native scan report (not wrapped):** four-step multipart-to-S3:
+`initiate` (query params `toolName`, `totalParts`) → `presign` per part → `PUT` each
+part to S3 → `complete` with the ETags. Runnable CLI: `examples/upload_scan_v2.py`.
+Four gotchas, all of which fail quietly rather than loudly:
 
-> **Verified end-to-end (2026-07):** the presign→PUT idiom is confirmed working via
-> the sibling **asset** upload `POST /api/v2/assets/upload` → `{"signedUrl": ...}` →
-> `PUT` CSV → async ingest (0 → 100 assets on JulianSandbox). Methods 2–4 for findings
-> follow the same shapes but have not each been run end-to-end; verify on JulianSandbox
-> before customer use.
+- **`presign` returns the URL as a bare string** in `data`, not an object —
+  `json()["data"]["url"]` raises `TypeError`.
+- **`GET /api/scans/{scanId}` returns the scan unwrapped** — no `{"data": ...}`
+  envelope, unlike the upload endpoints. `.get("data", {})` silently yields `{}`.
+- **Status enum is `INITIATED` / `PROCESSING` / `IMPORTING` / `COMPLETED` /
+  `FAILED`.** There is no `PENDING` or `IN_PROGRESS`; polling for those spins
+  until timeout.
+- **`toolName` must be a native scanner.** Custom tools → `400 "Custom tool is not
+  supported yet"` (use Method 3). Not all native names pass either: `OWASP ZAP`
+  → `400 "Tool is not supported yet"`. Confirmed working: `Trivy`, `Snyk`.
+
+**Do not use `POST /client/utils/scan/upload`** for scan upload from an API token.
+Swagger presents it prominently, but it is gated by `ROLE_REPORT_INGESTION` at the
+security-filter layer and returns `403 "You don't have required role to perform this
+action."` The 403 fires *before* body validation, so a correct payload is still
+rejected. It also takes `product`/`subProduct` as **name strings** rather than the
+v2 endpoint's numeric ids, so payloads are not interchangeable.
+
+> **Verified end-to-end (2026-07):** Methods 1–4 all confirmed on JulianSandbox —
+> see the verification table in `docs/uploading-findings.md`. Method 4 ran the full
+> four-step flow with `Trivy`, reaching `status: COMPLETED` with 5 findings ingested
+> (1 Critical / 2 High / 1 Medium / 1 Low, `scanType: ["SCA"]`) in 376 ms; a repeat
+> upload of the same file returned `totalNew: 0` / `totalDuplicate: 5`, confirming
+> dedup. The presign→PUT idiom is also confirmed via the sibling **asset** upload
+> `POST /api/v2/assets/upload` (0 → 100 assets).
 
 ---
 
