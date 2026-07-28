@@ -125,14 +125,115 @@ ac._session.post(
 ```
 
 - **Legacy single-shot:** `POST /api/scanUploadUrl` (`S3UploadUrlRequest`).
-- **Not usable from an API token:** `POST /client/utils/scan/upload` (the endpoint
-  Swagger presents most prominently for scan upload) is gated by
-  `ROLE_REPORT_INGESTION` at the security-filter layer and returns
-  `403 "You don't have required role to perform this action."` The 403 fires
-  *before* body validation, so a correctly-formed payload is still rejected —
-  don't burn time tuning the body. Note it also takes `product`/`subProduct` as
-  **name strings**, unlike the v2 endpoint's numeric ids, so payloads are not
-  interchangeable.
+- **Name-based alternative:** `POST /client/utils/scan/upload` takes group/subgroup
+  **names** instead of numeric ids, but needs a different token type — see below.
+
+---
+
+## Which endpoint, which token
+
+Two request schemas, and the choice is forced by **what kind of API token you hold**.
+Verified against three tokens on JulianSandbox (2026-07-28):
+
+| Endpoint | Schema | Names? | Standard token | Report Ingestion token |
+|---|---|---|---|---|
+| `POST /client/utils/scan/upload` | `S3UploadUrlRequest` | ✅ | ❌ 403 | ✅ **200** |
+| `POST /api/scanUploadUrl` | `S3UploadUrlRequest` | ✅ | ❌ 403 | ❌ 403 |
+| `POST /api/v2/scans/upload/initiate` | `ScanUploadRequest` | ❌ ids | ✅ 200 | ❌ 403 |
+| `POST /user/tools/generic/configurations/{tool}/upload` | `ScanUploadRequest` | ❌ ids | ✅ 200 | ❌ 403 |
+| `GET /user/product`, `POST /api/findings` (reads) | — | — | ✅ 200 | ❌ 403 |
+
+### The token type is chosen at creation
+
+`ROLE_REPORT_INGESTION` comes from creating the key with API token type
+**"Report Ingestion"** in ArmorCode. It is *not* a permission you can add to an
+existing standard token — to use the name-based endpoint you must mint a new key of
+that type.
+
+### The two token types are disjoint, not nested
+
+A Report Ingestion token is **not** a superset of a standard token. It is 403 on
+*everything* except `/client/utils/scan/upload` — including `GET /user/product` and
+`POST /api/findings`. Consequences for any upload script:
+
+- **You cannot resolve names to ids with a Report Ingestion token** — but you don't
+  need to, since that endpoint accepts names and resolves them server-side
+  (`"juice-shop"` → `843798`, returned as `productId`/`subProductId` on the `scan`
+  object).
+- **You cannot verify the upload with the same token.** Neither the findings query
+  nor the scan-status read is permitted. Verifying ingestion needs a second,
+  standard token — or the UI.
+- Conversely, a standard token can resolve ids and read findings but is 403 on the
+  name-based endpoint. Pick the flow to match the token you have; there is no single
+  token that does both.
+
+### Don't infer the gate from the schema
+
+`/api/scanUploadUrl` uses the same `S3UploadUrlRequest` schema as
+`/client/utils/scan/upload` but is 403 for **both** token types, with a different
+error — a URL allowlist rejection naming the user
+(`"User <email> not allowed to access url /api/scanUploadUrl requested method POST"`)
+rather than `"You don't have required role to perform this action."` Two separate
+mechanisms; same-schema does not imply same-access. Treat `/api/scanUploadUrl` as
+unavailable.
+
+### 403 fires before body validation
+
+On any of these, the 403 precedes deserialization, so a correctly-formed payload is
+still rejected. If you get 403, the body is not the problem — don't tune it. Note
+also that the two schemas are not interchangeable: `ScanUploadRequest` rejects name
+strings outright (`Cannot deserialize value of type 'Long' from String "juice-shop"`)
+and uses `environment` where `S3UploadUrlRequest` uses `env`.
+
+### The name-based flow (Report Ingestion token)
+
+Two steps, no id resolution, no `complete` call. This is the simplest upload path
+when you hold a Report Ingestion token:
+
+```python
+import requests
+
+BASE = "https://app.armorcode.com"
+H = {"Authorization": f"Bearer {REPORT_INGESTION_TOKEN}",
+     "Content-Type": "application/json"}
+
+# 1. presign — group/subgroup by NAME, resolved server-side
+r = requests.post(f"{BASE}/client/utils/scan/upload", headers=H, json={
+    "product": "juice-shop",                        # name, not id
+    "subProduct": "jwayte-armorcode/juice-shop",    # name, not id
+    "fileName": "findings.csv",
+    "fileSizeBytes": 846,
+    "scanTool": "custom-SCA-Sample-Findings",       # custom tools ARE allowed here
+    "env": "Production",                            # `env`, not `environment`
+    "toolType": "PUSH",
+    "triggerby": "PUSH_UPLOAD",
+    "tags": ["batch:nightly"],
+})
+r.raise_for_status()
+signed_url = r.json()["signedUrl"]                  # top level, no `data` envelope
+scan_id = r.json()["scan"]["id"]
+
+# 2. PUT the bytes to S3 — no auth header; signature is in the URL
+requests.put(signed_url, data=open("findings.csv", "rb"),
+             headers={"Content-Type": "text/csv"}).raise_for_status()
+```
+
+- Response nests the scan under `scan` and the URL at the **top level** as
+  `signedUrl` — a third response shape, distinct from both v2 (`data.*`) and
+  `GET /api/scans/{id}` (unwrapped).
+- The `scan` object echoes the resolved ids (`productId`, `subProductId`), which is
+  the cleanest way to confirm the names matched what you intended.
+- **Custom tools work here.** Unlike the v2 endpoint, `scanTool` accepts a custom
+  tool name (verified with `custom-SCA-Sample-Findings`); no `Custom-` prefix or
+  `customTool: true` flag needed.
+- **Required** (per `S3UploadUrlRequest`): `env`, `fileName`, `product`, `scanTool`,
+  `subProduct`. Useful optionals: `fileSizeBytes`, `tags`, `scanDate`,
+  `scanIdentifier`, `toolConfigId`, `uploadTimezone`, `processThroughXlParser`.
+- The Swagger *example* shows `tagz`, which is a typo in the docs — no such field
+  exists in the schema. Use `tags`. A misspelled key is silently ignored rather than
+  rejected, so tags would just vanish.
+- `product`/`subProduct` carry the names; the schema also lists separate
+  `productName`/`subProductName` fields, which are not needed for this flow.
 
 ### Checking the result
 
@@ -155,24 +256,54 @@ scan["status"], scan["totalCount"], scan["totalNew"], scan["totalDuplicate"]
 
 ## Verification status
 
-**All four methods verified end-to-end on JulianSandbox (2026-07):**
+Tested on JulianSandbox (2026-07). Note the distinction between *transport
+verified* (HTTP 200s, scan reaches `COMPLETED`) and *ingestion verified* (findings
+confirmed present by querying them) — see the warning below.
 
-| Method | Result |
-|--------|--------|
-| 1. Generic JSON | ✅ `{"scanId": ...}` |
-| 2. CSV multipart | ✅ HTTP 200 "File uploaded successfully" |
-| 3. CSV → custom tool (`custom-SCA-Sample-Findings`) | ✅ presign 200 + S3 PUT 200 |
-| 4. Native scan report (full 4-step flow) | ✅ scan `COMPLETED`, 5 findings ingested |
+| Method | Transport | Findings confirmed |
+|--------|-----------|--------------------|
+| 1. Generic JSON | ✅ `{"scanId": ...}` | — |
+| 2. CSV multipart | ✅ HTTP 200 "File uploaded successfully" | — |
+| 3. CSV → custom tool (`custom-SCA-Sample-Findings`) | ✅ presign 200 + PUT 200 | ✅ 10 findings, ids `16770102044`–`53` |
+| 4. Native scan report (4-step v2 flow) | ✅ all 4 steps 200, `COMPLETED` | ❌ **none created** |
+| Name-based (`/client/utils/scan/upload`) | ✅ presign 200 + PUT 200 | ⚠️ scan `COMPLETED`, not independently confirmed |
 
-Runnable examples for all four: **`examples/upload_findings.py`**.
-Method 4 as a standalone CLI: **`examples/upload_scan_v2.py`**.
+Runnable examples: **`examples/upload_findings.py`** (methods 1–4),
+**`examples/upload_scan_v2.py`** (method 4 CLI).
 
-Method 4 detail (2026-07-28, tool `Trivy`, group `juice-shop` / subgroup
-`jwayte-armorcode/juice-shop`): initiate → presign → S3 PUT → complete all
-returned 200; `GET /api/scans/{id}` then reported `status: COMPLETED`,
-`totalCount: 5`, `totalNew: 5`, severity `{Critical: 1, High: 2, Medium: 1,
-Low: 1}`, `scanType: ["SCA"]`, processed in 376 ms. A second upload of the same
-file returned `totalNew: 0` / `totalDuplicate: 5`, confirming dedup.
+> ### `COMPLETED` does not mean findings were created
+>
+> Method 4 was run with a hand-written Trivy JSON file. All four HTTP steps returned
+> 200, `GET /api/scans/{id}` reported `status: COMPLETED`, `totalCount: 5`,
+> `totalNew: 5` and a per-severity breakdown matching the file exactly — and **zero
+> findings were created**. A tenant-wide findings query returned nothing for any of
+> those CVEs.
+>
+> The counts appear to be derived from parsing the uploaded file, not from rows
+> written to the database. A schema ArmorCode's parser doesn't fully recognise can
+> yield a plausible-looking `COMPLETED` scan with real-looking statistics and no
+> findings at all.
+>
+> **Always verify by querying the findings**, not by reading scan counters. Method 3
+> was confirmed this way (10 findings, ids listed above, `source:
+> custom-SCA-Sample-Findings`); Method 4 was not, which is how the discrepancy
+> surfaced.
+>
+> Corollary: model new upload files on a format known to ingest in the target tenant
+> (Method 3's CSV mapping, or a real scanner's output) rather than hand-rolling one
+> from the format's public docs.
+
+**Reconciling scans and findings** — two traps when checking your work:
+
+- `filters.scanId` on `POST /api/findings` is **silently ignored**. It returns
+  unrelated findings rather than an error, which reads as a successful lookup.
+- Findings stay attributed to the scan that **first created** them, not the most
+  recent scan that touched them. Re-uploading the same findings leaves them under
+  the original scan id in the UI (`S-<scanId>`), so a new scan can legitimately show
+  `totalNew: N` while the UI still lists those findings under an older scan.
+- The findings query itself has been observed returning `0` for a subgroup whose
+  findings were confirmed present minutes earlier — likely async reindexing. Retry,
+  and cross-check in the UI before concluding an upload failed.
 
 Two gotchas the testing surfaced:
 - **Method 2** must NOT send `Content-Type: application/json` — the client session pins that header, which breaks the multipart boundary (HTTP 415). Send only the auth header and let `requests` set the multipart content-type (see the example).

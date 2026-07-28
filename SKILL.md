@@ -193,20 +193,61 @@ Four gotchas, all of which fail quietly rather than loudly:
   supported yet"` (use Method 3). Not all native names pass either: `OWASP ZAP`
   → `400 "Tool is not supported yet"`. Confirmed working: `Trivy`, `Snyk`.
 
-**Do not use `POST /client/utils/scan/upload`** for scan upload from an API token.
-Swagger presents it prominently, but it is gated by `ROLE_REPORT_INGESTION` at the
-security-filter layer and returns `403 "You don't have required role to perform this
-action."` The 403 fires *before* body validation, so a correct payload is still
-rejected. It also takes `product`/`subProduct` as **name strings** rather than the
-v2 endpoint's numeric ids, so payloads are not interchangeable.
+### Which endpoint, which token
 
-> **Verified end-to-end (2026-07):** Methods 1–4 all confirmed on JulianSandbox —
-> see the verification table in `docs/uploading-findings.md`. Method 4 ran the full
-> four-step flow with `Trivy`, reaching `status: COMPLETED` with 5 findings ingested
-> (1 Critical / 2 High / 1 Medium / 1 Low, `scanType: ["SCA"]`) in 376 ms; a repeat
-> upload of the same file returned `totalNew: 0` / `totalDuplicate: 5`, confirming
-> dedup. The presign→PUT idiom is also confirmed via the sibling **asset** upload
-> `POST /api/v2/assets/upload` (0 → 100 assets).
+Endpoint choice is forced by **API token type**, not preference. Verified across
+three tokens (2026-07-28):
+
+| Endpoint | Schema | Names? | Standard | Report Ingestion |
+|---|---|---|---|---|
+| `POST /client/utils/scan/upload` | `S3UploadUrlRequest` | ✅ | ❌ 403 | ✅ 200 |
+| `POST /api/scanUploadUrl` | `S3UploadUrlRequest` | ✅ | ❌ 403 | ❌ 403 |
+| `POST /api/v2/scans/upload/initiate` | `ScanUploadRequest` | ❌ ids | ✅ 200 | ❌ 403 |
+| `POST /user/tools/generic/configurations/{tool}/upload` | `ScanUploadRequest` | ❌ ids | ✅ 200 | ❌ 403 |
+| reads (`GET /user/product`, `POST /api/findings`) | — | — | ✅ 200 | ❌ 403 |
+
+- **"Report Ingestion" is an API token *type* chosen at key creation** — not a
+  permission addable to an existing standard token. To use the name-based endpoint,
+  mint a new key of that type.
+- **The two types are disjoint, not nested.** A Report Ingestion token is 403 on
+  everything except `/client/utils/scan/upload` — including `GET /user/product` and
+  `POST /api/findings`. So it needs no id resolution (names resolve server-side) but
+  also **cannot verify its own upload**; that takes a second standard token or the UI.
+- **Don't infer the gate from the schema.** `/api/scanUploadUrl` shares
+  `S3UploadUrlRequest` yet is 403 for *both* types, with a different error — a URL
+  allowlist rejection (`"User <email> not allowed to access url ..."`) rather than the
+  role message. Treat it as unavailable.
+- **403 precedes body validation** on all of these, so a correct payload is still
+  rejected — if you get 403, the body isn't the problem. The schemas aren't
+  interchangeable either: `ScanUploadRequest` rejects names outright
+  (`Cannot deserialize value of type 'Long' from String "juice-shop"`) and uses
+  `environment` where `S3UploadUrlRequest` uses `env`.
+
+**Name-based flow** (Report Ingestion token) — 2 steps, no id lookup, no `complete`:
+`POST /client/utils/scan/upload` with `{product, subProduct, fileName, scanTool, env,
+toolType, triggerby}` (required: `env`, `fileName`, `product`, `scanTool`,
+`subProduct`) → `signedUrl` at the **top level** (a third response shape) → `PUT` the
+bytes. Custom tools **are** accepted in `scanTool` here, unlike v2. Swagger's example
+shows `tagz`, which is a docs typo — the field is `tags`, and a misspelled key is
+silently dropped.
+
+> **Verification status (2026-07):** see the table in `docs/uploading-findings.md`.
+> **Method 3 is the only flow with findings independently confirmed** (10 findings,
+> ids `16770102044`–`53`, `source: custom-SCA-Sample-Findings`). Method 4 reached
+> `status: COMPLETED` with `totalCount: 5` and a matching severity breakdown while
+> creating **zero findings** — a hand-written Trivy JSON produced statistics from
+> file parsing but nothing persisted.
+>
+> **`COMPLETED` + non-zero `totalCount` is not proof of ingestion.** Always confirm
+> by querying findings. Two traps when reconciling: `filters.scanId` on
+> `POST /api/findings` is silently ignored, and findings stay attributed to the scan
+> that *first* created them, so the UI can show them under an older `S-<scanId>` than
+> the one you just ran. The findings query has also returned `0` for a subgroup whose
+> findings were confirmed minutes earlier (async reindexing) — retry and cross-check
+> the UI before concluding failure.
+>
+> Prefer modelling new upload files on a format known to ingest in the target tenant
+> over hand-rolling from public format docs.
 
 ---
 
