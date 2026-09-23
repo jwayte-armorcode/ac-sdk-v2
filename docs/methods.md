@@ -178,6 +178,48 @@ carries `name`/`id` plus a `reason` for skips/failures, and `tags_added` for upd
 See `examples/tag_sub_products.py` for a ready-to-run CLI wrapper (supports `--sub-group`,
 `--csv`, `--id`, `--force`, and `--dry-run`).
 
+### Pulling full detail for every sub-product in a tenant
+
+`get_sub_products()` returns a lightweight id+name list for the whole tenant in one call, but
+there is no bulk endpoint for *full* sub-product detail (parent product, description, owners,
+environment, tags, config) — that requires one `get_sub_product(id)` call per sub-product.
+For a tenant with tens of thousands of sub-products, pulling full detail for all of them can
+take hours of sequential API calls.
+
+`examples/pull_all_sub_products.py` is a ready-to-run script for exactly that case:
+
+* **Resumable** — writes each sub-product's detail to a JSONL file as it's fetched and
+  checkpoints completed ids periodically, so an interrupted run (crash, Ctrl-C, killed
+  process) resumes from where it left off instead of starting over.
+* **Rate-limit safe** — uses `ArmorCodeClient`'s built-in throttled/retrying session
+  (`min_request_interval` proactive pacing plus exponential backoff on `429`/`5xx`,
+  honoring `Retry-After`) rather than reimplementing retry logic.
+* **Non-fatal per-item failures** — a single sub-product that fails even after the SDK's own
+  retries are logged to a failures file; the run continues rather than aborting.
+
+```bash
+# full pull, default pacing (~20 req/s), writes into ./sub_product_pull/
+python examples/pull_all_sub_products.py --env env
+
+# resume an interrupted run — already-done ids are skipped automatically
+python examples/pull_all_sub_products.py --env env --out-dir ./sub_product_pull
+
+# slower pacing for a tenant with a tighter rate limit
+python examples/pull_all_sub_products.py --env env --min-interval 0.2
+
+# quick smoke test against the first 50 sub-products only
+python examples/pull_all_sub_products.py --env env --limit 50
+```
+
+Output lands in `--out-dir` (default `./sub_product_pull/`):
+
+| File | Contents |
+|------|----------|
+| `sub_product_details.jsonl` | One full sub-product record per line, appended as fetched |
+| `checkpoint_done_ids.json` | Ids completed so far — read on startup to resume |
+| `failed_ids.jsonl` | Ids that failed after the SDK's own retries, with the error |
+| `progress.log` | Timestamped progress/rate/ETA, plus start/end summary |
+
 ## Tickets
 
 Product and sub-product accept names (resolved to IDs internally) or integer IDs. Assignee is the display name from the ticketing system, not an email.
