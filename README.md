@@ -157,6 +157,7 @@ API_TOKEN=<api-token>
 - **[docs/methods.md](docs/methods.md)** — complete method reference, grouped by resource
 - **[docs/findings.md](docs/findings.md)** — finding filters, filter cheatsheet, 10K limit & auto-chunking
 - **[docs/uploading-findings.md](docs/uploading-findings.md)** — the four findings-upload methods (JSON, CSV multipart, CSV → custom tool, native scan report)
+- **[docs/rate-limiting.md](docs/rate-limiting.md)** — how the SDK paces requests and retries `429`/`5xx` automatically, how to tune it for bulk pulls, and how to make a long-running script resumable
 - **[docs/undocumented-apis.md](docs/undocumented-apis.md)** — ArmorCode endpoints the SDK doesn't wrap and the public spec documents poorly, with verified request shapes (currently: Azure Boards ticket-mapping CRUD via the legacy `/user/tickets/jira/*` path)
 - **[examples/demo.py](examples/demo.py)** — Python demo script
 - **[ruby/examples/demo.rb](ruby/examples/demo.rb)** — Ruby demo script

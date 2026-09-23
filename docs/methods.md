@@ -220,6 +220,10 @@ Output lands in `--out-dir` (default `./sub_product_pull/`):
 | `failed_ids.jsonl` | Ids that failed after the SDK's own retries, with the error |
 | `progress.log` | Timestamped progress/rate/ETA, plus start/end summary |
 
+See [rate-limiting.md](rate-limiting.md) for how `min_request_interval`/`max_retries` work
+under the hood, how to tune them for your own bulk pulls, and the general pattern for making
+any long-running script resumable.
+
 ## Tickets
 
 Product and sub-product accept names (resolved to IDs internally) or integer IDs. Assignee is the display name from the ticketing system, not an email.
