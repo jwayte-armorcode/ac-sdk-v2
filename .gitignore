@@ -6,3 +6,4 @@ github_creds
 __pycache__/
 *.pyc
 .env
+.DS_Store

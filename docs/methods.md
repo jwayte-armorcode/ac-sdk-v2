@@ -128,6 +128,7 @@ Product and sub-product methods accept names wherever an ID is required — the 
 | `update_sub_product(sub_product_id, name, description, tags, extra)` | Update a sub-product — `tags` replaces the full existing set |
 | `update_sub_product_add_tags(sub_product_id, tags)` | Append tags without touching existing ones |
 | `update_sub_product_set_tag(sub_product_id, key_value)` | Set one tag by key — adds if absent, replaces if key exists |
+| `bulk_add_sub_product_tags(tags, sub_product_names, sub_product_ids, force, dry_run)` | Append tags across many sub-products at once, resolving names to ids |
 
 ```python
 # Create with tags
@@ -144,6 +145,38 @@ ac.update_product_add_tags(product_name="my-product", tags=["team:security"])
 ac.update_product_set_tag("superowner:new@example.com", product_name="my-product")
 ac.update_sub_product_set_tag(sub["id"], "superowner:new@example.com")
 ```
+
+### Bulk-tagging many sub-products
+
+`bulk_add_sub_product_tags` wraps `update_sub_product_add_tags` (non-destructive — existing
+tags are preserved and duplicates skipped) so hundreds of sub-products can be tagged in a
+single call. There is no batch endpoint under the hood — it issues a GET + PUT per
+sub-product, so budget roughly two API calls per target.
+
+Sub-product names are not guaranteed unique. A name matching more than one sub-product is
+**skipped** by default and reported, not guessed at — pass `force=True` to tag every match,
+or pass `sub_product_ids` to bypass name resolution entirely.
+
+```python
+result = ac.bulk_add_sub_product_tags(
+    ["pci-scope"],
+    sub_product_names=["my-sub-product", "another-sub-product"],
+    dry_run=True,   # resolve and report without writing anything
+)
+
+for e in result["updated"]:
+    print(f"tagged {e['name']} (id={e['id']}) += {e['tags_added']}")
+for e in result["skipped"]:
+    print(f"skipped {e.get('name') or e.get('id')}: {e['reason']}")
+for e in result["failed"]:
+    print(f"FAILED {e.get('name') or e.get('id')}: {e['reason']}")
+```
+
+Returns `{"updated": [...], "skipped": [...], "failed": [...], "dry_run": bool}` — each entry
+carries `name`/`id` plus a `reason` for skips/failures, and `tags_added` for updates.
+
+See `examples/tag_sub_products.py` for a ready-to-run CLI wrapper (supports `--sub-group`,
+`--csv`, `--id`, `--force`, and `--dry-run`).
 
 ## Tickets
 

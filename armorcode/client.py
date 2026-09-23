@@ -1326,6 +1326,24 @@ class ArmorCodeClient:
             )
         return int(matches[0]["id"])
 
+    def _lookup_sub_product_ids(self, sub_product_name):
+        """Resolve a sub-product name to all ids matching it exactly.
+
+        Unlike ``_lookup_product_id`` this returns a *list*, because sub-product
+        names are not unique in practice (the same repo name can appear under
+        more than one product). Callers decide how to handle ambiguity.
+
+        Returns:
+            list[int]: Ids of sub-products whose name matches exactly. Empty if
+            none match.
+        """
+        matches = [
+            int(sp["id"])
+            for sp in self.get_sub_products()
+            if sp.get("name") == sub_product_name
+        ]
+        return matches
+
     def create_sub_product(self, name, product_name=None, *, product_id=None,
                            description=None, environment_id=None, tier=None,
                            tags=None, extra=None):
@@ -1455,6 +1473,91 @@ class ArmorCodeClient:
         merged = existing + [t for t in tags if t not in existing]
         return self.update_sub_product(sub_product_id, tags=merged)
 
+    def bulk_add_sub_product_tags(self, tags, *, sub_product_names=None,
+                                  sub_product_ids=None, force=False,
+                                  dry_run=False):
+        """Add tags to many sub-products in one call, resolving names to ids.
+
+        Wraps :meth:`update_sub_product_add_tags`, which is non-destructive:
+        existing tags are preserved and duplicates are skipped.
+
+        Sub-product names are not guaranteed unique. By default a name matching
+        more than one sub-product is *skipped* rather than guessed at; pass
+        ``force=True`` to tag every match instead. Pass ids via
+        ``sub_product_ids`` to bypass name resolution entirely.
+
+        There is no batch endpoint, so this issues a GET plus a PUT per
+        sub-product. Expect roughly two API calls per target.
+
+        Args:
+            tags: List of tag strings to add (e.g. ``["pci-scope"]``).
+            sub_product_names: Sub-product names to resolve and tag.
+            sub_product_ids: Sub-product ids to tag directly, no resolution.
+            force: Tag all matches when a name is ambiguous instead of skipping.
+            dry_run: Resolve and report without writing anything.
+
+        Returns:
+            dict: ``{"updated": [...], "skipped": [...], "failed": [...],
+            "dry_run": bool}``. Each entry carries ``name``/``id`` plus a
+            ``reason`` for skips and failures, and ``tags_added`` for updates.
+        """
+        if not tags:
+            raise ValueError("tags must be a non-empty list")
+        if not sub_product_names and not sub_product_ids:
+            raise ValueError(
+                "Provide sub_product_names and/or sub_product_ids"
+            )
+
+        updated, skipped, failed = [], [], []
+        targets = []
+
+        for sp_id in sub_product_ids or []:
+            targets.append((int(sp_id), None))
+
+        for name in sub_product_names or []:
+            matches = self._lookup_sub_product_ids(name)
+            if not matches:
+                skipped.append({"name": name, "reason": "no sub-product found"})
+            elif len(matches) > 1 and not force:
+                skipped.append({
+                    "name": name,
+                    "ids": matches,
+                    "reason": (
+                        f"ambiguous: {len(matches)} sub-products share this "
+                        f"name ({matches}). Re-run with force=True to tag all, "
+                        f"or pass the id explicitly."
+                    ),
+                })
+            else:
+                targets.extend((sp_id, name) for sp_id in matches)
+
+        for sp_id, name in targets:
+            try:
+                current = self.get_sub_product(sp_id)
+                existing = list(current.get("tags") or [])
+                to_add = [t for t in tags if t not in existing]
+                entry = {
+                    "id": sp_id,
+                    "name": name or current.get("name"),
+                    "tags_added": to_add,
+                }
+                if not to_add:
+                    entry["reason"] = "all tags already present"
+                    skipped.append(entry)
+                    continue
+                if not dry_run:
+                    self.update_sub_product(sp_id, tags=existing + to_add)
+                updated.append(entry)
+            except Exception as exc:
+                failed.append({"id": sp_id, "name": name, "reason": str(exc)})
+
+        return {
+            "updated": updated,
+            "skipped": skipped,
+            "failed": failed,
+            "dry_run": dry_run,
+        }
+
     def update_product_set_tag(self, key_value, product_name=None, *,
                                product_id=None):
         """Set a tag value by key on a product, adding it if absent or
@@ -1511,6 +1614,266 @@ class ArmorCodeClient:
         existing = [t for t in (current.get("tags") or []) if not t.startswith(f"{key}:")]
         merged = existing + [key_value]
         return self.update_sub_product(sub_product_id, tags=merged)
+
+    def move_sub_product_to_product(self, sub_product_id, target_product_id, *,
+                                     grant_access_on_new_parent=False):
+        """Move a sub-product to a different parent product.
+
+        Hits ``POST /api/sub-product/{id}/changeProduct/{productId}``.
+
+        .. warning::
+            **Asynchronous** (Kafka-driven migration on the server side). A
+            ``200`` response means the move was *accepted*, not that it has
+            completed -- confirmed by direct observation: batches of ~400
+            calls fired back-to-back took several minutes to fully drain,
+            with individual sub-products still showing their old parent
+            product for 30-60+ seconds after the call returned 200. Re-check
+            with :meth:`get_sub_product` after a delay (25s is a reasonable
+            floor for a single call; a large batch may take minutes to
+            drain) rather than trusting the response alone.
+
+            The endpoint validates against duplicate names in the target
+            product and rejects with ``400`` if another migration is
+            already in progress for this sub-product id -- confirmed error
+            bodies:
+            ``{"message": "Previous operation is in progress"}``,
+            ``{"message": "Subproduct already belongs to <productId>"}``,
+            ``{"message": "Subproduct - <name> already exists in <product>"}``.
+            These are all safe/expected outcomes when re-running against an
+            id that already moved or is mid-flight -- do not treat them as
+            fatal; check current state via :meth:`get_sub_product` instead.
+
+        Args:
+            sub_product_id: Sub-product id to move (required).
+            target_product_id: Destination product id (required). Resolve
+                by name first if needed -- product names are not guaranteed
+                unique in this tenant (confirmed: a stale/inaccessible
+                duplicate product id can coexist with the real one under
+                the same name; the dead one 400s on a plain
+                ``GET /user/product/{id}`` while the real one returns full
+                detail with a populated ``subProductJpaDtos`` list -- verify
+                by GET before trusting a name-search result).
+            grant_access_on_new_parent: Whether to grant the sub-product's
+                current team access to the new parent product.
+
+        Returns:
+            dict or None: API response body (typically empty on success).
+        """
+        resp = self._session.post(
+            f"{self.base_url}/api/sub-product/{sub_product_id}/changeProduct/{target_product_id}",
+            params={"grantAccessOnNewParent": "true" if grant_access_on_new_parent else "false"},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    def archive_sub_product(self, sub_product_id, *, permanent=False, comment=None):
+        """Archive or permanently delete a sub-product.
+
+        Hits ``DELETE /api/sub-product/{id}``.
+
+        .. warning::
+            **Two separate "archive" endpoints exist and behave
+            differently** -- confirmed by direct testing:
+
+            - ``POST /api/sub-product/archive/{id}`` and
+              ``POST /api/sub-product/bulk/archive`` both **silently
+              reject** live, gettable sub-products with
+              ``"SubProduct not found for ID: ..."`` /
+              ``"Please select valid sub-products to be archived"`` --
+              root cause unconfirmed (possibly an undocumented
+              deactivation precondition), but neither endpoint is usable
+              in practice against an ``Active`` sub-product.
+            - **This method's endpoint** (``DELETE /api/sub-product/{id}``)
+              is what the ArmorCode UI itself calls for its own "archive"
+              action (confirmed via HAR capture of a live browser session)
+              and is the one that actually works.
+
+            **Asynchronous**, same as :meth:`move_sub_product_to_product` --
+            a ``200`` response does not mean the archive/delete has landed
+            yet. Confirmed: some calls needed 30-60+ seconds before
+            :meth:`get_sub_product` on that id started returning ``400``
+            (the expected post-archive/delete state). Re-check with a
+            delay before concluding a call had no effect.
+
+            ``permanent=True`` is irreversible -- per the API's own
+            OpenAPI docs, it "permanently removes the sub-product... all
+            associated data (findings, assets, scans) deleted". The
+            default (``permanent=False``) soft-archives: moves the
+            sub-product to the tenant's Archive business unit, restorable,
+            findings/history retained. This is what a bare ``DELETE`` with
+            no query string (i.e. the UI's own call) does.
+
+        Args:
+            sub_product_id: Sub-product id to archive/delete (required).
+            permanent: If True, passes ``delete=true`` for permanent,
+                       irreversible removal. Default False (soft-archive).
+            comment: Optional comment. Untested against this endpoint --
+                     the UI's own call sends no query string at all;
+                     included here for forward compatibility only.
+
+        Returns:
+            dict or None: API response body (typically empty on success).
+        """
+        params = {}
+        if permanent:
+            params["delete"] = "true"
+        if comment:
+            params["comment"] = comment
+        resp = self._session.delete(
+            f"{self.base_url}/api/sub-product/{sub_product_id}",
+            params=params or None,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    def move_findings_to_sub_product(self, finding_ids, *, business_unit_id,
+                                      target_product_id, target_sub_product_id,
+                                      target_environment_id, note=None):
+        """Move a set of findings to a different product/sub-product/environment.
+
+        Hits ``POST /api/tenant/move-findings``.
+
+        .. note::
+            Environment ids are **per-sub-product**, not shared -- confirmed
+            by direct comparison (the same environment *name*, e.g.
+            "Production", has a different id on every sub-product's own
+            ``environmentDtos`` list). Resolve ``target_environment_id`` by
+            fetching the target sub-product (:meth:`get_sub_product`) and
+            matching on environment *name*, not by reusing an id from the
+            source sub-product or from another call. There is no
+            environment-name-to-id convenience wrapper yet -- callers
+            currently do this match themselves; see
+            ``merge_into_default.py`` in the Tempus project scratch scripts
+            for a worked example that groups findings by source
+            environment name and issues one call per matched environment.
+
+        Args:
+            finding_ids: List of finding ids (int) to move. All must
+                share the same source environment *name* as
+                ``target_environment_id`` resolves to -- issue one call
+                per distinct environment name if findings span more than
+                one.
+            business_unit_id: Business unit id (e.g. the tenant's default
+                org unit).
+            target_product_id: Destination product id.
+            target_sub_product_id: Destination sub-product id.
+            target_environment_id: Destination environment id -- must
+                belong to ``target_sub_product_id`` specifically (see note
+                above), not just any environment with a matching name.
+            note: Optional free-text note recorded with the move.
+
+        Returns:
+            dict or None: API response body (typically empty on success).
+        """
+        body = {
+            "findings": list(finding_ids),
+            "buId": business_unit_id,
+            "apId": target_product_id,
+            "aspId": target_sub_product_id,
+            "aeId": target_environment_id,
+        }
+        if note:
+            body["note"] = note
+        resp = self._session.post(
+            f"{self.base_url}/api/tenant/move-findings",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            return {"raw": resp.text}
+
+    def search_audit_log(self, *, search_text=None, revision_types=None, users=None,
+                          entity_names=None, entity_ids=None, start_date_ms=None,
+                          end_date_ms=None, audit_log_level="ALL", page=0, size=100):
+        """Search the tenant's audit log.
+
+        Hits ``POST /api/audit-log/search``. There is also a deprecated GET
+        endpoint (``/user/audit/log/details/page``, tag "Audit Log
+        (Deprecated)") with a very similar filter surface documented in its
+        own OpenAPI description -- not wrapped here, prefer this method.
+
+        .. warning::
+            ``start_date_ms``/``end_date_ms`` are **unreliable when
+            combined with other filters** -- confirmed by direct testing:
+            a query with ``entityId`` + a date range that should have
+            matched a known event returned 0 results, while the same
+            ``entityId`` alone (no date range) correctly returned it.
+            A broad query (``revisionType`` + ``entityName``, no id) with a
+            date range also returned 0 despite matching events existing in
+            that window per an id-only query. Prefer filtering by
+            ``entity_ids``/``search_text``/``revision_types`` and slicing
+            by date **client-side** on the returned ``createdAt`` values
+            rather than trusting the server-side date filter.
+
+            Also note: passing epoch milliseconds as a **string** silently
+            returns 0 results; pass them as a plain **int**.
+
+        Args:
+            search_text: Free-text search (min length 3 per the API schema).
+            revision_types: List of revision type strings, e.g.
+                ``["MOVED", "CREATED", "UPDATED", "DELETED"]``. Full enum:
+                LOGGED_IN, LOGGED_OUT, SESSION_TIME_OUT, CREATED, UPDATED,
+                DELETED, ADDED, REMOVED, REQUESTED, MOVED, DOWNLOADED,
+                USER_REQUEST, INVOKED, LISTED, GROUPED, AGGREGATED,
+                QUERIED, SEARCHED.
+            users: List of user email strings to filter by.
+            entity_names: List of entity type strings, e.g.
+                ``["Sub Product", "Product", "Runbook", "Core Configuration"]``.
+            entity_ids: List of entity ids (int) -- the most reliable filter,
+                confirmed to work correctly on its own.
+            start_date_ms: Start of date range, epoch milliseconds (int).
+                See warning above re: reliability when combined with other filters.
+            end_date_ms: End of date range, epoch milliseconds (int).
+            audit_log_level: "ALL" (default), "TENANT_LEVEL", or
+                "BUSINESS_UNIT_LEVEL".
+            page: Page number (0-indexed).
+            size: Page size.
+
+        Returns:
+            dict: ``{"content": [...], "totalElements": int, "last": bool, ...}``
+            (the unwrapped ``data`` field of the response envelope).
+        """
+        body = {}
+        if search_text:
+            body["searchText"] = search_text
+        if revision_types:
+            body["revisionType"] = list(revision_types)
+        if users:
+            body["user"] = list(users)
+        if entity_names:
+            body["entityName"] = list(entity_names)
+        if entity_ids:
+            body["entityId"] = [int(i) for i in entity_ids]
+        if start_date_ms is not None:
+            body["startDate"] = int(start_date_ms)
+        if end_date_ms is not None:
+            body["endDate"] = int(end_date_ms)
+
+        resp = self._session.post(
+            f"{self.base_url}/api/audit-log/search",
+            json=body,
+            params={"page": page, "size": size, "audit-log-level": audit_log_level},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json().get("data", {})
 
     # ------------------------------------------------------------------
     # Tickets
