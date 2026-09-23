@@ -3093,8 +3093,16 @@ class ArmorCodeClient:
 
         Returns:
             list[dict]: Full runbook detail objects that were exported.
+
+        Note:
+            Pacing/retry against rate limits is handled by the client's own
+            ``_ThrottledRetrySession`` (see ``min_request_interval``/
+            ``max_retries`` on the constructor), not by this method — no
+            manual delay is added between calls here. See
+            ``docs/rate-limiting.md`` if exporting a very large number of
+            runbooks trips a 429 with the client's default pacing.
         """
-        import os, json, re, time
+        import os, json, re
 
         os.makedirs(output_dir, exist_ok=True)
 
@@ -3116,8 +3124,6 @@ class ArmorCodeClient:
             fname = os.path.join(output_dir, f"{rid}_{safe_label}.json")
             with open(fname, "w") as f:
                 json.dump(detail, f, indent=2, default=str)
-
-            time.sleep(0.15)  # avoid rate-limiting
 
         manifest = os.path.join(output_dir, "all_runbooks.json")
         with open(manifest, "w") as f:

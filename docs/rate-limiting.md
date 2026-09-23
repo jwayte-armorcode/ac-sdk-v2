@@ -123,11 +123,12 @@ for item_id in all_ids:
 ```
 
 Avoid the older, manual pattern of sprinkling `time.sleep(...)` at call
-sites (a few places in this codebase still do this, predating the
-throttled session) — it paces requests but does nothing for a `429` that
-gets past it, since there's no retry behind it. Prefer the constructor
-kwargs above; they cover both proactive pacing and reactive retry in one
-place, for every call the client makes.
+sites — it paces requests but does nothing for a `429` that gets past it,
+since there's no retry behind it. Prefer the constructor kwargs above; they
+cover both proactive pacing and reactive retry in one place, for every call
+the client makes. (`export_runbooks` used to do exactly this — a hardcoded
+`time.sleep(0.15)` between calls — before being updated to rely on the
+throttled session like everything else in the client.)
 
 ## Summary
 
