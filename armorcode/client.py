@@ -2882,7 +2882,43 @@ class ArmorCodeClient:
                   ``TOOl_CATEGORY``), each value a dict with
                   ``customFieldName`` (source column name, ``""`` if unused),
                   ``isDedupField`` (bool), and optionally ``otherProperties``.
-            tool_type: List of tool type strings, e.g. ``["SCA"]``.
+
+                  **Field keys are NOT validated against the OpenAPI schema**
+                  (``fieldMapping`` is a free-form map there) — the server
+                  checks them against a hidden allowlist and returns
+                  ``400 "Invalid value 'X' in the request"`` for the first
+                  bad key it finds (one at a time, not all at once).
+                  Confirmed **valid** via live probing against a real tenant:
+                  ``SUMMARY``, ``SEVERITY``, ``DESCRIPTION``, ``CVE``, ``CWE``,
+                  ``MITIGATION``, ``SCAN_DATE``, ``COMPONENT_NAME``,
+                  ``COMPONENT_VERSION``, ``TICKET_ID``, ``TAGS``,
+                  ``DEVELOPER``, ``CVSS_SCORE``, ``URL``, ``FILE_PATH``,
+                  ``STEPS_TO_REPRODUCE``, ``IMPACT``, ``TOOl_CATEGORY``,
+                  ``STATUS``. Confirmed **invalid**: ``REMEDIATION``,
+                  ``ASSET``, ``ASSET_NAME``, ``HOSTNAME``, ``HOST_NAME``,
+                  ``FQDN``, ``IP_ADDRESS``, ``LINE_NUMBER``, ``CATEGORY``,
+                  ``PRIORITY``, ``REFERENCE``, ``PORT``, ``PROTOCOL``,
+                  ``PLUGIN_ID``, ``SOLUTION``, ``VULNERABILITY_NAME``,
+                  ``FINDING_ID``. Notably **there is no hostname/asset field**
+                  for custom CSV mappings — carry hostname data in ``URL``,
+                  ``TAGS``, or ``DESCRIPTION`` instead.
+            tool_type: List of tool type strings. **Use ``["CUSTOM"]`` for
+                  CSV uploads via :meth:`upload_custom_tool_csv`.** This
+                  endpoint's own schema also accepts values like ``"PT"`` or
+                  ``"PENTESTING_FRAMEWORK"`` and returns ``200 OK`` for them
+                  at config-creation time, but the backend's scan-parsing
+                  engine only recognises a narrower internal enum — a config
+                  created with ``tool_type=["PT"]`` accepts the config call
+                  fine, then **every scan uploaded against it fails
+                  asynchronously** (only visible via
+                  :meth:`get_scan_status`, not at creation time) with::
+
+                      Scan failed :java.lang.IllegalArgumentException: No enum
+                      constant com.armorcode.parser.core.enums.ToolTypes.PT
+
+                  Confirmed fix: update the configuration (``PUT
+                  /user/tools/custom/configurations/{id}`` with the full
+                  body) to ``toolType: ["CUSTOM"]`` and re-upload.
             extra: Optional dict merged into the request body (escape hatch
                    for fields like ``dateFormat`` not yet surfaced as named
                    params).
@@ -4240,6 +4276,238 @@ class ArmorCodeClient:
             return resp.json()
         except ValueError:
             return {"raw": resp.text}
+
+    # ------------------------------------------------------------------
+    # Pentest CSV upload -> assessment link (confirmed working pipeline)
+    #
+    # Validated end-to-end against a real tenant (app.armorcode.com):
+    #
+    #   1. create_custom_tool_configuration(name, field_mapping,
+    #      tool_type=["CUSTOM"])           -- one-time setup of the CSV
+    #                                          column mapping
+    #   2. upload_custom_tool_csv(...)     -- uploads the CSV, returns a
+    #                                          scan dict with its id
+    #   3. get_scan_status(scan_id)        -- poll until status is
+    #                                          COMPLETED (or FAILED)
+    #   4. query findings (e.g. get_findings(extra_filters=
+    #      {"source": [tool_name]}) or raw POST /user/findings/) to
+    #      resolve the finding ids the scan just created
+    #   5. link_findings_to_assessment(finding_ids, assessment_id)
+    #                                       -- kicks off an async link job
+    #   6. get_job_status(job_id)          -- poll until status is
+    #                                          COMPLETED
+    #
+    # This replaces an earlier-explored approach (POST /api/findings/draft
+    # + setting the assessment's status to COMPLETE to "publish" drafts
+    # into live findings) which was abandoned unconfirmed after the
+    # status-to-COMPLETE call hung for several minutes and then returned a
+    # bare 500 with no usable error detail. The scan-upload + bulk-link
+    # pipeline below is the confirmed-working alternative: every step
+    # returns an inspectable status you can poll, and a CSV of pentest
+    # findings lands as normal, fully-featured findings (not a separate
+    # "draft" record type) already scoped to the right product/subProduct
+    # before you link them to the assessment.
+    # ------------------------------------------------------------------
+
+    def upload_custom_tool_csv(self, csv_path, tool_name, product_id, sub_product_id,
+                                *, environment="Production", tags=None, custom_tool=True,
+                                extra=None):
+        """Upload a CSV of findings against a custom tool configuration.
+
+        Two-step flow, both confirmed working end-to-end against a real
+        tenant: (1) ``POST /user/tools/generic/configurations/{tool_name}/upload``
+        to register the upload and get a presigned S3 URL, then (2) a raw
+        ``PUT`` of the CSV bytes to that URL. The scan this creates is
+        processed **asynchronously** — a successful return from this method
+        means the upload was accepted, not that findings have landed yet.
+        Poll :meth:`get_scan_status` with the returned scan's ``id`` until
+        its ``status`` is ``COMPLETED`` (confirmed: a 2-row CSV completed in
+        about 2 seconds) or ``FAILED``.
+
+        Args:
+            csv_path: Local path to the CSV file to upload.
+            tool_name: The custom tool configuration's name, e.g.
+                       ``"custom-Pentest"`` (must already exist — see
+                       :meth:`create_custom_tool_configuration`). This is
+                       used as the ``source`` value findings are tagged
+                       with, so it's also what you filter on afterwards to
+                       find the ids of the findings the scan created.
+            product_id: Target group (product) id.
+            sub_product_id: Target subgroup (sub-product) id.
+            environment: ``"Production"`` (default) or another environment
+                         name configured on the target sub-product.
+            tags: Optional list of tag strings applied to the scan/findings,
+                  e.g. ``["pentest:q3-2026"]``.
+            custom_tool: Whether to pass ``customTool: true`` in the upload
+                         request. Default ``True`` — this is required for
+                         configurations created via
+                         :meth:`create_custom_tool_configuration`.
+            extra: Optional dict merged into the upload request body
+                   (``ScanUploadRequest`` fields such as ``scanIdentifier``,
+                   ``scanDate``, ``uploadTimezone``, ``armorcodeProjects``).
+
+        Returns:
+            dict: The ``scan`` record from the upload response (includes
+            its server-assigned ``id`` for polling via
+            :meth:`get_scan_status`).
+
+        Raises:
+            requests.HTTPError: If either the upload-registration call or
+                the S3 PUT fails.
+
+        Example::
+
+            scan = client.upload_custom_tool_csv(
+                "pentest_findings.csv",
+                tool_name="custom-Pentest",
+                product_id=1172202,
+                sub_product_id=3498559,
+                tags=["pentest:q3-2026"],
+            )
+            # poll client.get_scan_status(scan["id"]) until COMPLETED
+        """
+        path = Path(csv_path)
+        body = {
+            "environment": environment,
+            "product": product_id,
+            "subProduct": sub_product_id,
+            "fileName": path.name,
+            "fileSizeBytes": path.stat().st_size,
+            "customTool": custom_tool,
+        }
+        if tags is not None:
+            body["tags"] = list(tags)
+        if extra:
+            body.update(extra)
+
+        resp = self._session.post(
+            f"{self.base_url}/user/tools/generic/configurations/{tool_name}/upload",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        signed_url = payload["signedUrl"]
+        scan = payload["scan"]
+
+        with open(path, "rb") as f:
+            put_resp = requests.put(
+                signed_url,
+                data=f,
+                headers={"Content-Type": "text/csv"},
+                timeout=self._timeout,
+            )
+        put_resp.raise_for_status()
+
+        return scan
+
+    def get_scan_status(self, scan_id):
+        """Get the status of an uploaded scan.
+
+        Hits ``GET /api/scans/{scan_id}``. Scans process asynchronously —
+        call this in a poll loop after :meth:`upload_custom_tool_csv`
+        rather than assuming completion. Confirmed observed ``status``
+        values: ``PENDING`` (still processing), ``COMPLETED`` (findings
+        ingested — check ``totalNew``/``totalDuplicate``/``totalCount``),
+        ``FAILED`` (check ``errMessage``/``errorMessage`` for the parser's
+        failure reason — this is where a bad ``toolType`` on the tool
+        configuration surfaces, e.g. ``"Scan failed
+        :java.lang.IllegalArgumentException: No enum constant
+        com.armorcode.parser.core.enums.ToolTypes.PT"``).
+
+        Args:
+            scan_id: Scan id, as returned in the ``scan`` dict from
+                     :meth:`upload_custom_tool_csv`.
+
+        Returns:
+            dict: The scan record, including ``status``, ``totalCount``,
+            ``totalNew``, ``totalDuplicate``, ``errMessage``/``errorMessage``.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/scans/{scan_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def link_findings_to_assessment(self, finding_ids, assessment_id, *, notes=None, extra=None):
+        """Link findings to a pentest/assessment.
+
+        Hits ``PUT /user/findings/v2/bulk/change-basic-details`` with an
+        ``id_term`` filter selecting the given findings. Confirmed working
+        against a real tenant: 2 findings linked and reflected in each
+        finding's ``assessments`` list within ~10 seconds.
+
+        This call itself only **submits an async job** — the immediate
+        response is ``{"data": {"jobId": ..., "status": "ACCEPTED"}, ...}``,
+        not confirmation the link has landed. Poll :meth:`get_job_status`
+        with the returned job id until its ``status`` is ``COMPLETED``.
+
+        Args:
+            finding_ids: List of finding ids (int) to link.
+            assessment_id: Assessment id to link them to.
+            notes: Optional note recorded on the bulk update.
+            extra: Optional dict merged into the request body.
+
+        Returns:
+            dict: The immediate response body, e.g.
+            ``{"data": {"jobId": "...", "status": "ACCEPTED"}, "success":
+            true, ...}``. Use ``result["data"]["jobId"]`` with
+            :meth:`get_job_status` to track completion.
+
+        Example::
+
+            result = client.link_findings_to_assessment(
+                [23026925298, 23026925299], assessment_id=27126,
+                notes="Linking to Q3 external pentest",
+            )
+            job_id = result["data"]["jobId"]
+            # poll client.get_job_status(job_id) until COMPLETED
+        """
+        body = {
+            "assessmentId": assessment_id,
+            "findingFilterRequest": {"filters": {"id_term": list(finding_ids)}},
+        }
+        if notes is not None:
+            body["notes"] = notes
+        if extra:
+            body.update(extra)
+
+        resp = self._session.put(
+            f"{self.base_url}/user/findings/v2/bulk/change-basic-details",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_job_status(self, job_id):
+        """Get the status of an async bulk-operation job.
+
+        Hits ``GET /api/v2/jobs/{job_id}``. Confirmed working for the
+        ``FINDING_BASIC_DETAILS_BULK_UPDATE`` job type created by
+        :meth:`link_findings_to_assessment` (job completed in ~10s for 2
+        findings). Other async job types on this API likely use the same
+        endpoint shape, but that is unconfirmed — don't assume it's
+        universal without checking a given job type's own response.
+
+        Args:
+            job_id: Job id, as returned in
+                    ``response["data"]["jobId"]`` from an async bulk
+                    operation such as :meth:`link_findings_to_assessment`.
+
+        Returns:
+            dict: The job status body's ``data`` fields, typically
+            including ``status`` (e.g. ``"COMPLETED"``), ``totalFindings``,
+            ``processedFindings``, ``failedFindingIds``.
+        """
+        resp = self._session.get(
+            f"{self.base_url}/api/v2/jobs/{job_id}",
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload.get("data", payload)
 
     # ------------------------------------------------------------------
     # API Discovery
