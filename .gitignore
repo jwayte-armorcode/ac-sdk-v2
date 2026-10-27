@@ -7,3 +7,4 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+!pentest_loader/template.xlsx
