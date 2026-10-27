@@ -8,3 +8,4 @@ __pycache__/
 .env
 .DS_Store
 !pentest_loader/template.xlsx
+!pentest_loader/skill/armorcode-pentest-loader/template.xlsx
